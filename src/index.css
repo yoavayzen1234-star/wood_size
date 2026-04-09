@@ -1,0 +1,71 @@
+@import url('https://fonts.googleapis.com/css2?family=Heebo:wght@400;700&display=swap');
+@import 'tailwindcss';
+@import './theme-hex.css';
+
+@layer base {
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    margin: 0;
+    font-family: 'Heebo', sans-serif;
+    @apply bg-stone-100 text-stone-900 antialiased;
+  }
+
+  /* כפתורים: מיקוד מקלדת ברור (אנטר מפעיל) — מסגרת + מעט גדול יותר */
+  main button[type='button']:focus-visible:not(:disabled),
+  header button[type='button']:focus-visible:not(:disabled) {
+    @apply relative z-[1] scale-[1.03] rounded-md shadow-md outline-none ring-2 ring-amber-500 ring-offset-2 ring-offset-stone-100 transition-transform duration-100;
+  }
+}
+
+/* A4 print: results only, clean margins */
+@media print {
+  @page {
+    size: A4;
+    margin: 12mm;
+  }
+
+  body {
+    @apply bg-white text-black;
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+
+  .no-print {
+    display: none !important;
+  }
+
+  .print-only {
+    display: block !important;
+  }
+
+  .print-break-after {
+    break-after: page;
+  }
+
+  #root {
+    max-width: none !important;
+    width: 100% !important;
+    margin: 0 !important;
+    border: none !important;
+    min-height: 0 !important;
+  }
+
+  .beam-visual {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  main button[type='button']:focus-visible {
+    transform: none !important;
+    box-shadow: none !important;
+    outline: none !important;
+  }
+}
+
+.print-only {
+  display: none;
+}

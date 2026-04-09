@@ -1,0 +1,36 @@
+/*
+  html2canvas לא תומך ב-oklch — Tailwind v4 משתמש ב-oklch כברירת מחדל.
+  דריסה ל-hex (לפי סקייל Tailwind v3) כדי ש-PDF/צילום מסך לא יקרסו.
+*/
+@theme {
+  --color-stone-50: #fafaf9;
+  --color-stone-100: #f5f5f4;
+  --color-stone-200: #e7e5e4;
+  --color-stone-300: #d6d3d1;
+  --color-stone-400: #a8a29e;
+  --color-stone-500: #78716c;
+  --color-stone-600: #57534e;
+  --color-stone-700: #44403c;
+  --color-stone-800: #292524;
+  --color-stone-900: #1c1917;
+  --color-stone-950: #0c0a09;
+
+  --color-zinc-300: #d4d4d8;
+  --color-zinc-400: #a1a1aa;
+  --color-zinc-500: #71717a;
+  --color-zinc-600: #52525b;
+  --color-zinc-700: #3f3f46;
+  --color-zinc-800: #27272a;
+  --color-zinc-900: #18181b;
+  --color-zinc-950: #09090b;
+
+  --color-red-50: #fef2f2;
+  --color-red-100: #fee2e2;
+  --color-red-200: #fecaca;
+  --color-red-900: #7f1d1d;
+
+  --color-amber-100: #fef3c7;
+  --color-amber-500: #f59e0b;
+
+  --color-emerald-700: #047857;
+}
