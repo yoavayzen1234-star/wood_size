@@ -1,3 +1,4 @@
+import { throwIfAborted } from '../lib/asyncGuards'
 import { getMyProfile, type UserProfile } from './profile'
 import {
   getProjects,
@@ -26,12 +27,17 @@ function readLastProjectId(): string | null {
 /**
  * אחרי התחברות: פרופיל + רשימת פרויקטים קלה, טעינה חוסמת של הפרויקט האחרון שנפתח,
  * ואז טעינת שאר הפרויקטים במקביל ברקע (למטמון — בלי לחסום UI).
+ * `signal` — ביטול כל הרשת (למשל unmount לפני סיום); לא מעדכן state אחרי abort.
  */
-export async function preloadUserWorkspaceData(): Promise<UserWorkspaceBootstrap> {
+export async function preloadUserWorkspaceData(signal?: AbortSignal): Promise<UserWorkspaceBootstrap> {
+  throwIfAborted(signal)
+
   const [profile, projects] = await Promise.all([
-    getMyProfile().catch((): null => null),
-    getProjects().catch((): Project[] => []),
+    getMyProfile(signal).catch((): null => null),
+    getProjects(signal).catch((): Project[] => []),
   ])
+
+  throwIfAborted(signal)
 
   if (!projects.length) {
     return { profile, projects, editorByProjectId: {} }
@@ -43,17 +49,17 @@ export async function preloadUserWorkspaceData(): Promise<UserWorkspaceBootstrap
   const editorByProjectId: Record<string, ProjectEditorPayload> = {}
 
   try {
-    const current = await loadProjectEditorState(lastProject.id)
+    const current = await loadProjectEditorState(lastProject.id, undefined, signal)
     editorByProjectId[lastProject.id] = current
   } catch {
     /* העורך יטען מחדש מהרשת או מהמטמון ב־AuthedApp */
   }
 
+  throwIfAborted(signal)
+
   const rest = projects.filter((p) => p.id !== lastProject.id)
   void Promise.all(
-    rest.map((p) =>
-      loadProjectEditorState(p.id).catch(() => null),
-    ),
+    rest.map((p) => loadProjectEditorState(p.id, undefined, signal).catch(() => null)),
   )
 
   return { profile, projects, editorByProjectId }

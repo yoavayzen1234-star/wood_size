@@ -1,7 +1,11 @@
 import { jsPDF } from 'jspdf'
 import autoTable from 'jspdf-autotable'
 import bidiFactory from 'bidi-js'
-import type { CatalogOptimizationResult, PackedBeam } from '../lib/cuttingOptimizer'
+import type {
+  CatalogOptimizationResult,
+  PackedBeam,
+  UniqueCuttingPattern,
+} from '../lib/cuttingOptimizer'
 import { formatLocalDateIso } from '../numericFormat'
 import { registerHebrewFont } from './registerHebrewFont'
 
@@ -40,7 +44,17 @@ function rtlCell(v: string | number) {
   // Numeric-only strings should never be passed through bidi reordering.
   const s = v.trim()
   if (s !== '' && /^[0-9]+(\.[0-9]+)?$/.test(s)) return s
+  // רשימת אורכים בס"מ מופרדת בפסיקים — נשארת LTR (ללא היפוך ספרות).
+  if (s !== '' && /^[0-9]+(?:\.[0-9]+)?(?:\s*,\s*[0-9]+(?:\.[0-9]+)?)*$/.test(s)) return s
+  // קיבוץ: "60.0 × 5  |  177.0 × 1" — מספרים, כפל, מפריד אנכי בין קבוצות; בלי bidi.
+  if (s !== '' && isGroupedCutsListCell(s)) return s
   return toVisualRtl(v)
+}
+
+/** תא «רשימת חיתוכים» אחרי קיבוץ — אורך × כמות, קבוצות מופרדות ב־| עם ריווח. */
+function isGroupedCutsListCell(s: string): boolean {
+  const t = s.trim()
+  return /^[0-9]+(?:\.[0-9]+)?\s*×\s*[0-9]+(?:\s*[|│]\s*[0-9]+(?:\.[0-9]+)?\s*×\s*[0-9]+)*$/.test(t)
 }
 
 function formatLengthCm(valCm: number): string {
@@ -141,20 +155,74 @@ function drawCuttingSubsectionHeader(
   pdf.text(dims, rightX - wPrefix - gapMm, baselineY, { align: 'right' })
 }
 
-function beamCutGroups(beam: PackedBeam): Array<{ length: string; qty: number }> {
-  const tally = new Map<string, { count: number; firstIdx: number }>()
-  let idx = 0
-  for (const seg of beam.segments) {
-    if (seg.kind !== 'part') continue
-    const len = formatNumber1(seg.lengthMm / 10)
-    const prev = tally.get(len)
-    if (prev) prev.count += 1
-    else tally.set(len, { count: 1, firstIdx: idx })
-    idx += 1
+/** אורכי חלקים לפי סדר החיתוך (רק segment מסוג part). */
+function orderedPartLengthsMm(beam: PackedBeam): number[] {
+  return beam.segments.filter((s) => s.kind === 'part').map((s) => s.lengthMm)
+}
+
+/** מפריד בין קבוצות «אורך × כמות» — ריווח + קו אנכי קטן (קריא ב-PDF ובהדפסה). */
+const GROUPED_CUTS_GROUP_SEPARATOR = '  |  '
+
+/**
+ * קיבוץ אורכי חיתוך זהים (במ"מ) לתצוגה: אורך×כמות, קבוצות לפי יורד אורך, מופרדות ב־| עם ריווח.
+ */
+function formatGroupedCutsCmFromPartLengthsMm(lengthsMm: number[]): string {
+  if (lengthsMm.length === 0) return ''
+  const counts = new Map<number, number>()
+  for (const mm of lengthsMm) {
+    const key = Number(mm)
+    if (!Number.isFinite(key)) continue
+    counts.set(key, (counts.get(key) ?? 0) + 1)
   }
-  return [...tally.entries()]
-    .sort((a, b) => a[1].firstIdx - b[1].firstIdx)
-    .map(([length, meta]) => ({ length, qty: meta.count }))
+  const entries = [...counts.entries()].sort((a, b) => b[0] - a[0])
+  return entries.map(([mm, qty]) => `${formatNumber1(mm / 10)} × ${qty}`).join(GROUPED_CUTS_GROUP_SEPARATOR)
+}
+
+/**
+ * שני קורות זהים אם אותו פרופיל, אורך מקור, ורצף אורכי חיתוך (בסדר).
+ * משמש למיזוג שורות ב-PDF גם כשהמנוע החזיר כמה pattern-ים נפרדים.
+ */
+function cuttingPatternIdentityKey(beam: PackedBeam): string {
+  const seq = orderedPartLengthsMm(beam)
+  return `${(beam.material || '').trim()}\t${beam.lengthMm}\t${JSON.stringify(seq)}`
+}
+
+type GroupedCuttingPdfRow = {
+  profile: string
+  qty: number
+  stockCmStr: string
+  cutsCmStr: string
+  wasteCmStr: string
+}
+
+function groupIdenticalCuttingPatternsForPdf(patterns: UniqueCuttingPattern[]): GroupedCuttingPdfRow[] {
+  const map = new Map<string, { beam: PackedBeam; qty: number }>()
+  for (const p of patterns) {
+    const key = cuttingPatternIdentityKey(p.beam)
+    const q = Math.max(1, Math.floor(p.quantity))
+    const prev = map.get(key)
+    if (prev) prev.qty += q
+    else map.set(key, { beam: p.beam, qty: q })
+  }
+  const rows: GroupedCuttingPdfRow[] = []
+  for (const { beam, qty } of map.values()) {
+    const partsMm = orderedPartLengthsMm(beam)
+    const cutsCmStr = formatGroupedCutsCmFromPartLengthsMm(partsMm)
+    rows.push({
+      profile: profileDisplay(beam.material),
+      qty,
+      stockCmStr: formatStockCmNumberOnly(beam.lengthMm),
+      cutsCmStr,
+      wasteCmStr: formatStockCmNumberOnly(beam.wasteMm),
+    })
+  }
+  rows.sort((a, b) => {
+    const stockA = Number(a.stockCmStr)
+    const stockB = Number(b.stockCmStr)
+    if (stockA !== stockB) return stockB - stockA
+    return a.cutsCmStr.localeCompare(b.cutsCmStr, 'he')
+  })
+  return rows
 }
 
 export function exportOptimizationPdf(result: CatalogOptimizationResult, fileName: string) {
@@ -331,16 +399,14 @@ export function exportOptimizationPdf(result: CatalogOptimizationResult, fileNam
     cursorY = subsectionTitleY + fsPt * 0.3527 * 1.35
     pdf.setFont('Heebo', 'normal')
 
-    const cuttingCutsByRow = list.map((p) => beamCutGroups(p.beam))
-
-    const cuttingRows: PdfRow[] = list.map((p) => {
-      const profile = profileDisplay(p.beam.material)
-      const qty = Math.max(1, Math.floor(p.quantity))
-      const stock = formatStockCmNumberOnly(p.beam.lengthMm)
-      const cuts = '' // drawn manually in didDrawCell
-      const waste = formatStockCmNumberOnly(p.beam.wasteMm)
-      return [profile, qty, stock, cuts, waste]
-    })
+    const groupedRows = groupIdenticalCuttingPatternsForPdf(list)
+    const cuttingRows: PdfRow[] = groupedRows.map((g) => [
+      g.profile,
+      g.qty,
+      g.stockCmStr,
+      g.cutsCmStr,
+      g.wasteCmStr,
+    ])
 
     autoTable(pdf, {
       startY: cursorY + 1.2,
@@ -372,6 +438,7 @@ export function exportOptimizationPdf(result: CatalogOptimizationResult, fileNam
         3: {
           cellWidth: pageW - marginX * 2 - (26 + 16 + 22 + 18),
           halign: 'left',
+          fontSize: 10.5,
           cellPadding: { top: 3, right: 3, bottom: 3, left: 3 },
         },
         4: { cellWidth: 18, halign: 'left' },
@@ -379,13 +446,6 @@ export function exportOptimizationPdf(result: CatalogOptimizationResult, fileNam
       didParseCell: (data) => {
         if (data.section === 'body' && data.column.index === 1) {
           data.cell.styles.fontStyle = 'bold'
-        }
-        if (data.section === 'body' && data.column.index === 3) {
-          // We draw the "רשימת חיתוכים" cell manually in didDrawCell to get:
-          // - stable LTR math ordering: length × qty
-          // - extra spacing between groups
-          // - bold length + lighter qty
-          data.cell.text = ['']
         }
         if (data.section === 'body' && data.column.index === 4) {
           const rawRow = data.row.raw as PdfRow
@@ -396,55 +456,6 @@ export function exportOptimizationPdf(result: CatalogOptimizationResult, fileNam
             data.cell.styles.textColor = [185, 28, 28]
           }
         }
-      },
-      didDrawCell: (data) => {
-        if (data.section !== 'body' || data.column.index !== 3) return
-        const cuts = cuttingCutsByRow[data.row.index]
-        if (!cuts || cuts.length === 0) return
-
-        // Draw LTR segments inside RTL table cell.
-        // Format: 90.0 × 5  |  40.0 × 2  |  15.5 × 1
-        const doc = data.doc
-        const padding = 3
-        const x0 = data.cell.x + padding
-        const y0 = data.cell.y + padding + 3.2
-        const maxX = data.cell.x + data.cell.width - padding
-
-        doc.setFontSize(10)
-        let x = x0
-        let y = y0
-
-        const sep = '    |    '
-        const extraSepGapMm = 1.5
-
-        const drawToken = (text: string, fontStyle: 'normal' | 'bold', color: [number, number, number]) => {
-          doc.setFont('Heebo', fontStyle)
-          doc.setTextColor(color[0], color[1], color[2])
-          const w = doc.getTextWidth(text)
-          if (x + w > maxX) {
-            x = x0
-            y += 4.6
-          }
-          doc.text(text, x, y, { align: 'left' })
-          x += w
-        }
-
-        for (let i = 0; i < cuts.length; i++) {
-          const c = cuts[i]!
-          if (i > 0) {
-            drawToken(sep, 'normal', [100, 116, 139])
-            x += extraSepGapMm
-          }
-          // length (bold)
-          drawToken(c.length, 'bold', [15, 23, 42])
-          drawToken(' × ', 'normal', [15, 23, 42])
-          // qty (slightly lighter)
-          drawToken(String(c.qty), 'normal', [55, 65, 81])
-        }
-
-        // restore default text color for subsequent cells
-        doc.setTextColor(0)
-        doc.setFont('Heebo', 'normal')
       },
     })
 

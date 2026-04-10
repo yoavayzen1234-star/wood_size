@@ -59,8 +59,24 @@ export function parseDraftQuantity(s: string): number | null {
   return n
 }
 
+/** סוג עץ יציב: רוחב×גובה (ס״מ) — מתאים ל־material בחלקים ובקורות. */
+export function woodTypeKey(widthCm: number, heightCm: number): string {
+  return `${widthCm}x${heightCm}`
+}
+
+/** @deprecated מפתח ישן גובה×רוחב — תאימות לפרויקטים/מפתחות שמורים ב-DB */
 export function profileMaterialKey(h: number, w: number) {
   return `${h}x${w}`
+}
+
+/** מפתח legacy (גובה×רוחב) מתוך מפתח רוחב×גובה */
+export function legacyKeyFromWoodTypeKey(woodKey: string): string | null {
+  const m = /^([0-9.]+)x([0-9.]+)$/.exec(woodKey.trim())
+  if (!m) return null
+  const width = Number(m[1])
+  const height = Number(m[2])
+  if (!Number.isFinite(width) || !Number.isFinite(height)) return null
+  return profileMaterialKey(height, width)
 }
 
 export function rowsToParts(rows: DraftRow[]): PartInput[] {
@@ -76,7 +92,7 @@ export function rowsToParts(rows: DraftRow[]): PartInput[] {
       lengthCm,
       quantity,
       label: name,
-      material: profileMaterialKey(heightCm, widthCm),
+      material: woodTypeKey(widthCm, heightCm),
     })
   }
   return parts

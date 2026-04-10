@@ -1,7 +1,11 @@
 import { memo, type FocusEvent, type KeyboardEvent } from 'react'
 import { Loader2, Plus, Ruler, ShoppingCart, Trash2 } from 'lucide-react'
 import type { DraftRow } from '../../lib/draftRows'
-import { parseDraftPositiveCm, profileMaterialKey } from '../../lib/draftRows'
+import {
+  legacyKeyFromWoodTypeKey,
+  parseDraftPositiveCm,
+  woodTypeKey,
+} from '../../lib/draftRows'
 import { focusById, focusPartField, type PartField } from '../../partTableFocus'
 
 export type EditorPanelProps = {
@@ -107,8 +111,12 @@ export const EditorPanel = memo(function EditorPanel({
                   {(() => {
                     const h = parseDraftPositiveCm(row.heightCm)
                     const w = parseDraftPositiveCm(row.widthCm)
-                    const key = h != null && w != null ? profileMaterialKey(h, w) : null
-                    const hasOverride = key ? storeStockLengthsByMaterial[key] != null : false
+                    const key = h != null && w != null ? woodTypeKey(w, h) : null
+                    const leg = key != null ? legacyKeyFromWoodTypeKey(key) : null
+                    const hasOverride = key
+                      ? storeStockLengthsByMaterial[key] != null ||
+                        (leg != null && storeStockLengthsByMaterial[leg] != null)
+                      : false
                     return (
                       <button
                         type="button"
@@ -260,8 +268,12 @@ export const EditorPanel = memo(function EditorPanel({
                         {(() => {
                           const h = parseDraftPositiveCm(row.heightCm)
                           const w = parseDraftPositiveCm(row.widthCm)
-                          const key = h != null && w != null ? profileMaterialKey(h, w) : null
-                          const hasOverride = key ? storeStockLengthsByMaterial[key] != null : false
+                          const key = h != null && w != null ? woodTypeKey(w, h) : null
+                          const leg = key != null ? legacyKeyFromWoodTypeKey(key) : null
+                          const hasOverride = key
+                            ? storeStockLengthsByMaterial[key] != null ||
+                              (leg != null && storeStockLengthsByMaterial[leg] != null)
+                            : false
                           return (
                             <button
                               type="button"

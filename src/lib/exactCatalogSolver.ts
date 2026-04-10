@@ -5,7 +5,13 @@
  * לכל תבנית נבחר תמיד אורך הקטלוג **המינימלי** שעדיין מכיל את החיתוך.
  * בשחזור, בשוויון — תבנית עם **שארית קטנה יותר בצעד הנוכחי**, ואז **קורה קצרה יותר** (התאמה הדוקה).
  *
- * מגבלות: מרחב מצבים = ∏(dᵢ+1), וגם מספר סוגי חלקים — מעל סף — נפילה ל־optimizeWithStoreCatalog (heuristic).
+ * תמיד פותר באלגוריתם המדויק (DP) — ללא קירוב.
+ *
+ * ייעולים (לא משנים את סדר העדיפויות / הפתרון האופטימלי):
+ * - סינון תבניות **נשלטות** (dominated) + **אימות** מול DP על כל התבניות כשהתקציב זעום
+ * - **מיון** תבניות לסריקה: שארית → חיתוכים → אורך קורה
+ * - **חסם עליון** FFD (מטריקות ב־`exactSolverDebug.lastDiagnostics`)
+ * - memo לפי וקטור `rem` (כמו קודם)
  */
 
 import type {
@@ -17,18 +23,15 @@ import type {
 import {
   DEFAULT_STORE_STOCK_LENGTHS_CM,
   aggregateShoppingList,
-  optimizeWithStoreCatalog,
   normalizeStoreStockLengthsCm,
 } from './cuttingOptimizer'
 import { metersBareFromCm } from '../numericFormat'
 import { randomId } from './randomId'
 import { groupIdenticalCuttingBeams } from './beamGrouping'
-
-/** DP מדויק + יצירת תבניות כבדים מעל סף זה בדפדפן — קירוב מהיר. */
-const MAX_STATE_PRODUCT = 150_000
-/** יותר מדי סוגים (שם+אורך) → DFS תבניות ענקי גם כשמרחב המצבים נראה סביר. */
-const MAX_TYPES_FOR_EXACT = 10
-const MAX_PATTERNS = 75_000
+import {
+  generatePatternsParallel,
+  removeDominatedPatternsParallel,
+} from './exactCatalogParallel'
 
 type PartType = {
   label: string
@@ -44,80 +47,9 @@ type Pattern = {
 
 const normalizeMaterial = (s: string) => s.trim()
 
-function measureUsedMm(counts: number[], types: PartType[], kerfMm: number): number {
-  let sumL = 0
-  let n = 0
-  for (let i = 0; i < types.length; i++) {
-    const c = counts[i] ?? 0
-    sumL += c * types[i].lengthMm
-    n += c
-  }
-  if (n === 0) return 0
-  return sumL + (n - 1) * kerfMm
-}
-
 function minStockMmForUsed(storeStockLengthsCm: readonly number[], usedMm: number): number | null {
   const cm = storeStockLengthsCm.find((l) => l * 10 + 1e-9 >= usedMm)
   return cm != null ? cm * 10 : null
-}
-
-function generatePatterns(
-  types: PartType[],
-  kerfMm: number,
-  maxStockMm: number,
-  storeStockLengthsCm: readonly number[],
-): Pattern[] {
-  const m = types.length
-  if (m === 0) return []
-
-  const c = new Array(m).fill(0)
-  const seen = new Set<string>()
-  const patterns: Pattern[] = []
-
-  function record(counts: number[]) {
-    const used = measureUsedMm(counts, types, kerfMm)
-    if (used <= 0 || used > maxStockMm + 1e-6) return
-    const stockMm = minStockMmForUsed(storeStockLengthsCm, used)
-    if (stockMm === null) return
-    const key = counts.join(',')
-    if (seen.has(key)) return
-    seen.add(key)
-    patterns.push({
-      counts: [...counts],
-      usedMm: used,
-      stockLengthMm: stockMm,
-    })
-    if (patterns.length > MAX_PATTERNS) {
-      throw new Error('PATTERN_LIMIT')
-    }
-  }
-
-  function dfs(i: number, used: number, partsBeforeI: number) {
-    if (i === m) {
-      if (partsBeforeI > 0 && used <= maxStockMm + 1e-6) {
-        record([...c])
-      }
-      return
-    }
-
-    c[i] = 0
-    dfs(i + 1, used, partsBeforeI)
-
-    let u = used
-    let t = partsBeforeI
-    for (;;) {
-      const nu = u + types[i].lengthMm + (t > 0 ? kerfMm : 0)
-      if (nu > maxStockMm + 1e-6) break
-      c[i]++
-      u = nu
-      t = partsBeforeI + c[i]
-      dfs(i + 1, u, t)
-    }
-    c[i] = 0
-  }
-
-  dfs(0, 0, 0)
-  return patterns
 }
 
 function remKey(rem: number[]) {
@@ -192,15 +124,6 @@ function materialsInParts(rows: PartInput[]): string[] {
   return [...s]
 }
 
-function estimateStates(types: PartType[]): number {
-  let p = 1
-  for (const t of types) {
-    p *= t.demand + 1
-    if (p > MAX_STATE_PRODUCT) return p
-  }
-  return p
-}
-
 /** ערך DP: שאריות ← חיתוכים ← סך מטרי קורות ← מספר קורות */
 type DpVal = { wasteMm: number; cuts: number; stockMm: number; boards: number }
 
@@ -225,19 +148,96 @@ function dpEqual(a: DpVal, b: DpVal): boolean {
   )
 }
 
-function solveOneMaterialExact(
-  material: string,
+/** מטריקות אחרונות (בונוס) — לא משפיעות על תוצאת החישוב */
+export type ExactSolverDiagnostics = {
+  patternCountGenerated: number
+  patternCountAfterDominationFilter: number
+  greedyUpperBound: DpVal | null
+  dominationFilterVerified: boolean
+  memoSize: number
+}
+
+export const exactSolverDebug: { lastDiagnostics: ExactSolverDiagnostics | null } = {
+  lastDiagnostics: null,
+}
+
+function patternWasteMm(pat: Pattern): number {
+  return Math.max(0, pat.stockLengthMm - pat.usedMm)
+}
+
+/** סדר ענפים: שארית נמוכה → פחות חיתוכים → קורה קצרה */
+function sortPatternsForBranching(patterns: Pattern[], m: number): Pattern[] {
+  return [...patterns].sort((A, B) => {
+    const wA = patternWasteMm(A)
+    const wB = patternWasteMm(B)
+    if (wA !== wB) return wA - wB
+    const cA = patternCutsFromCounts(A.counts)
+    const cB = patternCutsFromCounts(B.counts)
+    if (cA !== cB) return cA - cB
+    if (A.stockLengthMm !== B.stockLengthMm) return A.stockLengthMm - B.stockLengthMm
+    for (let i = 0; i < m; i++) {
+      const d = (B.counts[i] ?? 0) - (A.counts[i] ?? 0)
+      if (d !== 0) return d
+    }
+    return 0
+  })
+}
+
+function usedMmForBeamPartLengths(lengths: readonly number[], kerfMm: number): number {
+  if (lengths.length === 0) return 0
+  let s = 0
+  for (const L of lengths) s += L
+  return s + (lengths.length - 1) * kerfMm
+}
+
+/**
+ * חסם עליון חוקי (פתרון אפשרי) — First Fit Decreasing על רשימת אורכים שטוחה.
+ * לא משמש לקיצוץ ענפים ב-DP (נדרש חסם תחתון תקף); רק לאבחון ולעצירה מוקדמת של «מושלם».
+ */
+function greedyFfdUpperBound(
   types: PartType[],
+  demand: number[],
   kerfMm: number,
   maxStockMm: number,
   storeStockLengthsCm: readonly number[],
-): { beams: PackedBeam[]; costMm: number } {
-  const demand = types.map((t) => t.demand)
-  const patterns = generatePatterns(types, kerfMm, maxStockMm, storeStockLengthsCm)
-  if (patterns.length === 0) {
-    return { beams: [], costMm: Infinity }
+): DpVal | null {
+  const pieces: number[] = []
+  for (let i = 0; i < types.length; i++) {
+    for (let k = 0; k < (demand[i] ?? 0); k++) pieces.push(types[i]!.lengthMm)
   }
+  if (pieces.length === 0) return { wasteMm: 0, cuts: 0, stockMm: 0, boards: 0 }
+  pieces.sort((a, b) => b - a)
+  const beams: number[][] = []
+  for (const L of pieces) {
+    if (L > maxStockMm + 1e-6) return null
+    let placed = false
+    for (const beam of beams) {
+      const next = [...beam, L]
+      const u = usedMmForBeamPartLengths(next, kerfMm)
+      if (u <= maxStockMm + 1e-6) {
+        beam.push(L)
+        placed = true
+        break
+      }
+    }
+    if (!placed) beams.push([L])
+  }
+  let wasteMm = 0
+  let cuts = 0
+  let stockMm = 0
+  const boards = beams.length
+  for (const beam of beams) {
+    const u = usedMmForBeamPartLengths(beam, kerfMm)
+    const sm = minStockMmForUsed(storeStockLengthsCm, u)
+    if (sm === null) return null
+    wasteMm += sm - u
+    cuts += beam.length <= 1 ? 0 : beam.length - 1
+    stockMm += sm
+  }
+  return { wasteMm, cuts, stockMm, boards }
+}
 
+function createDpSolver(patterns: Pattern[]) {
   const memo = new Map<string, DpVal>()
 
   function dp(rem: number[]): DpVal {
@@ -257,7 +257,7 @@ function solveOneMaterialExact(
         }
       }
       if (exceeds) continue
-      const next = rem.map((r, i) => Math.max(0, r - pat.counts[i]))
+      const next = rem.map((r, i) => Math.max(0, r - (pat.counts[i] ?? 0)))
       const helps = next.some((n, i) => n < rem[i])
       if (!helps) continue
       const sub = dp(next)
@@ -277,7 +277,82 @@ function solveOneMaterialExact(
     return best
   }
 
+  return { dp, memo }
+}
+
+/** השוואת ערך אופטימלי בין שתי קבוצות תבניות — לאימות סינון dominated */
+function dpOptimalEquals(demand: number[], patternsA: Pattern[], patternsB: Pattern[]): boolean {
+  const { dp: dpA } = createDpSolver(patternsA)
+  const { dp: dpB } = createDpSolver(patternsB)
+  const va = dpA(demand)
+  const vb = dpB(demand)
+  if (va.wasteMm === Infinity || vb.wasteMm === Infinity) return va.wasteMm === vb.wasteMm
+  return dpEqual(va, vb)
+}
+
+async function solveOneMaterialExact(
+  material: string,
+  types: PartType[],
+  kerfMm: number,
+  maxStockMm: number,
+  storeStockLengthsCm: readonly number[],
+): Promise<{ beams: PackedBeam[]; costMm: number }> {
+  const demand = types.map((t) => t.demand)
+  const m = types.length
+  const generatedLite = await generatePatternsParallel(
+    types,
+    kerfMm,
+    maxStockMm,
+    storeStockLengthsCm,
+  )
+  const generated: Pattern[] = generatedLite.map((p) => ({
+    counts: p.counts,
+    usedMm: p.usedMm,
+    stockLengthMm: p.stockLengthMm,
+  }))
+  if (generated.length === 0) {
+    exactSolverDebug.lastDiagnostics = {
+      patternCountGenerated: 0,
+      patternCountAfterDominationFilter: 0,
+      greedyUpperBound: null,
+      dominationFilterVerified: false,
+      memoSize: 0,
+    }
+    return { beams: [], costMm: Infinity }
+  }
+
+  const sortedFull = sortPatternsForBranching(generated, m)
+  const greedyUb = greedyFfdUpperBound(types, demand, kerfMm, maxStockMm, storeStockLengthsCm)
+
+  let patternsWork = sortedFull
+  let dominationVerified = false
+  const filteredRaw = await removeDominatedPatternsParallel(sortedFull, m)
+  const filteredSorted = sortPatternsForBranching(filteredRaw, m)
+
+  if (filteredSorted.length < sortedFull.length) {
+    const sumDemand = demand.reduce((a, b) => a + b, 0)
+    const estOps = sumDemand * Math.max(sortedFull.length, filteredSorted.length)
+    const canVerify = estOps <= 4_000_000
+    if (canVerify && dpOptimalEquals(demand, sortedFull, filteredSorted)) {
+      patternsWork = filteredSorted
+      dominationVerified = true
+    }
+  }
+
+  const { dp, memo } = createDpSolver(patternsWork)
+  exactSolverDebug.lastDiagnostics = {
+    patternCountGenerated: sortedFull.length,
+    patternCountAfterDominationFilter: patternsWork.length,
+    greedyUpperBound: greedyUb,
+    dominationFilterVerified: dominationVerified,
+    memoSize: 0,
+  }
+
   const optimal = dp(demand)
+  if (exactSolverDebug.lastDiagnostics) {
+    exactSolverDebug.lastDiagnostics.memoSize = memo.size
+  }
+
   if (optimal.wasteMm === Infinity) {
     return { beams: [], costMm: Infinity }
   }
@@ -292,7 +367,7 @@ function solveOneMaterialExact(
     let bestStepCuts = Infinity
     let bestPatStock = Infinity
 
-    for (const pat of patterns) {
+    for (const pat of patternsWork) {
       // Same strict quantity rule during reconstruction.
       let exceeds = false
       for (let i = 0; i < rem.length; i++) {
@@ -342,30 +417,44 @@ function solveOneMaterialExact(
   return { beams, costMm: optimal.stockMm }
 }
 
+function roundSolveSeconds(ms: number): number {
+  return Math.round((ms / 1000) * 100) / 100
+}
+
 /**
- * פותר קטלוג החנות בדיוק מרבי (בהנחת תבניות מלאות), או נופל ל-heuristic.
+ * פותר קטלוג החנות תמיד באלגוריתם המדויק (DP).
  */
-export function solveExactStoreCatalog(
+export async function solveExactStoreCatalog(
   partRows: PartInput[],
   kerfMm: number,
   defaultStoreStockLengthsCm: readonly number[] = DEFAULT_STORE_STOCK_LENGTHS_CM,
   storeStockLengthsByMaterial?: Readonly<Record<string, readonly number[]>>,
-): CatalogOptimizationResult {
+): Promise<CatalogOptimizationResult> {
+  const t0 = performance.now()
   const k = Math.max(0, kerfMm)
   const getStoreLengthsForMaterial = (material: string) =>
     normalizeStoreStockLengthsCm(storeStockLengthsByMaterial?.[material] ?? defaultStoreStockLengthsCm)
 
+  const finish = (partial: Omit<CatalogOptimizationResult, 'mode' | 'solveTimeMs' | 'solveTimeSeconds'>): CatalogOptimizationResult => {
+    const solveTimeMs = performance.now() - t0
+    return {
+      ...partial,
+      mode: 'store-catalog',
+      solverKind: 'exact-dp',
+      solveTimeMs,
+      solveTimeSeconds: roundSolveSeconds(solveTimeMs),
+    }
+  }
+
   const mats = materialsInParts(partRows)
   if (mats.length === 0) {
-    return {
+    return finish({
       patterns: [],
       errors: [],
       beamsUsed: 0,
       wastePercent: 0,
-      mode: 'store-catalog',
       shoppingList: [],
-      solverKind: 'exact-dp',
-    }
+    })
   }
 
   const errors: string[] = []
@@ -384,74 +473,32 @@ export function solveExactStoreCatalog(
   }
 
   if (errors.length > 0) {
-    return {
+    return finish({
       patterns: [],
       errors: [...new Set(errors)],
       beamsUsed: 0,
       wastePercent: 0,
-      mode: 'store-catalog',
       shoppingList: [],
-    }
-  }
-
-  let statesMax = 1
-  for (const material of mats) {
-    const types = buildTypesForMaterial(material, partRows)
-    if (types.length === 0) continue
-    statesMax = Math.max(statesMax, estimateStates(types))
+    })
   }
 
   const allBeams: PackedBeam[] = []
-  const solverNotes: string[] = []
-  const solverKinds = new Set<CatalogOptimizationResult['solverKind']>()
-  try {
-    for (const material of mats) {
-      const storeLengths = getStoreLengthsForMaterial(material)
-      const maxStockCm = storeLengths[storeLengths.length - 1]!
-      const maxStockMm = maxStockCm * 10
-      const types = buildTypesForMaterial(material, partRows)
-      if (types.length === 0) continue
+  for (const material of mats) {
+    const storeLengths = getStoreLengthsForMaterial(material)
+    const maxStockCm = storeLengths[storeLengths.length - 1]!
+    const maxStockMm = maxStockCm * 10
+    const types = buildTypesForMaterial(material, partRows)
+    if (types.length === 0) continue
 
-      const states = estimateStates(types)
-      const tooManyStates = states > MAX_STATE_PRODUCT
-      const tooManyTypes = types.length > MAX_TYPES_FOR_EXACT
-      if (tooManyStates || tooManyTypes) {
-        const filtered = partRows.filter((r) => r.material.trim() === material)
-        const base = optimizeWithStoreCatalog(filtered, k, storeLengths)
-        for (const p of base.patterns) {
-          for (let i = 0; i < p.quantity; i++) allBeams.push(p.beam)
-        }
-        solverKinds.add('heuristic-best-fit')
-        solverNotes.push(
-          tooManyTypes
-            ? `בחומר "${material}": יותר מדי סוגי חלקים שונים לחישוב מדויק — הוחל פתרון קירוב (Best Fit).`
-            : `בחומר "${material}": מרחב המצבים גדול מדי לחישוב מדויק — הוחל פתרון קירוב (Best Fit).`,
-        )
-        continue
-      }
-
-      const { beams, costMm } = solveOneMaterialExact(material, types, k, maxStockMm, storeLengths)
-      if (beams.length === 0 || costMm === Infinity) {
-        const filtered = partRows.filter((r) => r.material.trim() === material)
-        const base = optimizeWithStoreCatalog(filtered, k, storeLengths)
-        for (const p of base.patterns) {
-          for (let i = 0; i < p.quantity; i++) allBeams.push(p.beam)
-        }
-        solverKinds.add('heuristic-best-fit')
-        solverNotes.push(`בחומר "${material}": לא נמצאה תוכנית מלאה בתבניות — הוחל פתרון קירוב.`)
-        continue
-      }
-
-      allBeams.push(...beams)
-      solverKinds.add('exact-dp')
+    const { beams, costMm } = await solveOneMaterialExact(material, types, k, maxStockMm, storeLengths)
+    if (beams.length === 0 || costMm === Infinity) {
+      errors.push(
+        `בחומר "${material}": לא נמצאה תוכנית חיתוך מלאה. בדקו אורכי קורה בקטלוג או מידות חלקים.`,
+      )
+      continue
     }
-  } catch (e) {
-    if (e instanceof Error && e.message === 'PATTERN_LIMIT') {
-      // במקרה חריג של מגבלת תבניות, נופלים ל-heuristic לכל הפרויקט (התנהגות קודמת).
-      const base = optimizeWithStoreCatalog(partRows, k, normalizeStoreStockLengthsCm(defaultStoreStockLengthsCm))
-      return { ...base, solverKind: 'heuristic-best-fit', solverNote: 'חריגה ממגבלת תבניות — הוחל פתרון קירוב.' }
-    }
-    throw e
+
+    allBeams.push(...beams)
   }
 
   allBeams.sort((a, b) => {
@@ -463,14 +510,11 @@ export function solveExactStoreCatalog(
   const totalWasteMm = allBeams.reduce((s, b) => s + b.wasteMm, 0)
   const wastePercent = totalStockMm > 0 ? (100 * totalWasteMm) / totalStockMm : 0
 
-  return {
+  return finish({
     patterns: groupIdenticalCuttingBeams(allBeams).map((g) => ({ beam: g.beam, quantity: g.count })),
-    errors: [],
+    errors: [...new Set(errors)],
     beamsUsed: allBeams.length,
     wastePercent,
-    mode: 'store-catalog',
     shoppingList: aggregateShoppingList(allBeams),
-    solverKind: solverKinds.has('heuristic-best-fit') ? 'heuristic-best-fit' : 'exact-dp',
-    solverNote: solverNotes.length ? solverNotes.join(' ') : undefined,
-  }
+  })
 }

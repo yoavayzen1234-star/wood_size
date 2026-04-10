@@ -6,7 +6,10 @@
   "scripts": {
     "dev": "vite",
     "start": "vite",
+    "prebuild": "npm run icons:pwa",
     "build": "tsc -b && vite build",
+    "analyze": "tsc -b && vite build --mode analyze",
+    "icons:pwa": "node scripts/generate-pwa-icons.mjs",
     "lint": "eslint .",
     "preview": "vite preview"
   },
@@ -32,6 +35,8 @@
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.5.2",
     "globals": "^17.4.0",
+    "rollup-plugin-visualizer": "^7.0.1",
+    "sharp": "^0.34.5",
     "tailwindcss": "^4.2.2",
     "typescript": "~6.0.2",
     "typescript-eslint": "^8.58.0",

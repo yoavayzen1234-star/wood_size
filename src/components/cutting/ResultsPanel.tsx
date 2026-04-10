@@ -121,6 +121,58 @@ export const ResultsPanel = memo(function ResultsPanel({
             </p>
           </div>
         </div>
+
+        {result.solveTimeSeconds != null ? (
+          <p className="text-sm text-stone-600">
+            זמן חישוב:{' '}
+            <LtrNum ariaLabel={`זמן חישוב ${result.solveTimeSeconds} שניות`}>
+              {result.solveTimeSeconds.toFixed(2)}
+            </LtrNum>
+            <span dir="ltr" className="ms-1">
+              {' '}
+              s
+            </span>
+          </p>
+        ) : null}
+
+        {result.solverNote && result.woodTypeBreakdown && result.woodTypeBreakdown.length > 1 ? (
+          <div className="rounded-lg border border-amber-200/80 bg-amber-50/90 px-4 py-3 text-sm text-amber-950">
+            <p className="whitespace-pre-wrap font-medium leading-relaxed">{result.solverNote}</p>
+          </div>
+        ) : null}
+
+        {result.woodTypeBreakdown && result.woodTypeBreakdown.length > 1 ? (
+          <div className="rounded-xl border border-stone-200 bg-white p-4 shadow-sm ring-1 ring-stone-100/60">
+            <h3 className="mb-3 text-sm font-semibold text-stone-900">פילוח לפי סוג עץ (רוחב×גובה)</h3>
+            <ul className="space-y-2 text-sm text-stone-800">
+              {result.woodTypeBreakdown.map((row) => (
+                <li
+                  key={row.woodTypeKey}
+                  className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 border-b border-stone-100 pb-2 last:border-0 last:pb-0"
+                >
+                  <span className="font-semibold text-stone-900" dir="ltr">
+                    <BeamProfileDims material={row.woodTypeKey} ariaLabel={`פרופיל ${row.woodTypeKey}`} />
+                  </span>
+                  <span className="text-stone-600">
+                    קורות:{' '}
+                    <LtrNum ariaLabel={`${row.beamsUsed} קורות`}>{row.beamsUsed}</LtrNum>
+                    {' · '}
+                    שארית:{' '}
+                    <LtrNum ariaLabel={`${percentFixed2(row.wastePercent)} אחוז`}>
+                      {percentFixed2(row.wastePercent)}%
+                    </LtrNum>
+                    {' · '}
+                    רכישה:{' '}
+                    <LtrNum ariaLabel={`${metersBareFromCm(row.totalPurchaseLengthCm)} מטר`}>
+                      {metersBareFromCm(row.totalPurchaseLengthCm)}
+                    </LtrNum>{' '}
+                    מ׳
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
       </div>
 
       <div className="order-2 min-h-0 min-w-0 space-y-6 lg:order-2">

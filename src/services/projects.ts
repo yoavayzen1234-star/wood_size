@@ -1,3 +1,4 @@
+import { isAbortError, throwIfAborted } from '../lib/asyncGuards'
 import { supabase } from '../lib/supabase'
 import { DEFAULT_STORE_STOCK_LENGTHS_CM } from '../lib/cuttingOptimizer'
 import { computeProjectEditorDiff } from '../lib/projectEditorDiff'
@@ -129,8 +130,10 @@ function shouldFallbackSaveToDataJson(err: { message?: string } | null): boolean
   return m.includes('save_project_editor_state') || (m.includes('function') && m.includes('does not exist'))
 }
 
-async function requireUserId(): Promise<string> {
+async function requireUserId(signal?: AbortSignal): Promise<string> {
+  throwIfAborted(signal)
   const { data, error } = await supabase.auth.getUser()
+  throwIfAborted(signal)
   if (error) throw new Error(error.message)
   const uid = data.user?.id
   if (!uid) throw new Error('Not authenticated.')
@@ -172,13 +175,6 @@ function isCurrentSaveGeneration(projectId: string, generation: number): boolean
   return saveGenerationByProject.get(id) === generation
 }
 
-function throwIfAborted(signal: AbortSignal): void {
-  if (!signal.aborted) return
-  const e = new Error('The user aborted a request.')
-  e.name = 'AbortError'
-  throw e
-}
-
 export async function createProject(name: string): Promise<Project> {
   const trimmed = String(name ?? '').trim()
   if (!trimmed) throw new Error('Project name is required.')
@@ -196,14 +192,17 @@ export async function createProject(name: string): Promise<Project> {
   return projectFromListRowLite(data)
 }
 
-export async function getProjects(): Promise<Project[]> {
-  const userId = await requireUserId()
+export async function getProjects(signal?: AbortSignal): Promise<Project[]> {
+  const userId = await requireUserId(signal)
+  throwIfAborted(signal)
 
-  const { data, error } = await supabase
+  let q = supabase
     .from('projects')
     .select(PROJECT_LIST_SELECT_LITE)
     .eq('user_id', userId)
     .order('created_at', { ascending: true })
+  if (signal) q = q.abortSignal(signal)
+  const { data, error } = await q
 
   if (error) throw new Error(error.message)
   return (data ?? []).map((row) => projectFromListRowLite(row as ProjectListRowLite))
@@ -355,16 +354,6 @@ async function replaceProjectStockTable(
   if (error) throw new Error(error.message)
 }
 
-function isAbortError(e: unknown): boolean {
-  return (
-    (e instanceof Error && e.name === 'AbortError') ||
-    (typeof e === 'object' &&
-      e !== null &&
-      'name' in e &&
-      (e as { name?: string }).name === 'AbortError')
-  )
-}
-
 export type PersistProjectResult = 'saved' | 'noop' | 'aborted'
 
 /**
@@ -464,22 +453,37 @@ export function cloneEditorPayload(p: ProjectEditorPayload): ProjectEditorPayloa
 /**
  * Loads editor state from Supabase only (no cache read). Used by the cache layer.
  */
-async function fetchProjectEditorStateFromRemote(projectId: string): Promise<ProjectEditorPayload> {
+async function fetchProjectEditorStateFromRemote(
+  projectId: string,
+  signal: AbortSignal,
+): Promise<ProjectEditorPayload> {
   const id = String(projectId ?? '').trim()
   if (!id) throw new Error('Project id is required.')
 
-  await requireUserId()
+  await requireUserId(signal)
+  throwIfAborted(signal)
 
-  let projRowRes = await supabase.from('projects').select('kerf_mm, data').eq('id', id).single()
+  let projRowRes = await supabase
+    .from('projects')
+    .select('kerf_mm, data')
+    .eq('id', id)
+    .abortSignal(signal)
+    .single()
   let eProj = projRowRes.error
   let projRow: unknown = projRowRes.data
 
   if (eProj?.message?.includes('kerf_mm')) {
-    const retry = await supabase.from('projects').select('data').eq('id', id).single()
+    const retry = await supabase
+      .from('projects')
+      .select('data')
+      .eq('id', id)
+      .abortSignal(signal)
+      .single()
     eProj = retry.error
     projRow = retry.data
   }
 
+  throwIfAborted(signal)
   if (eProj) throw new Error(eProj.message)
   if (!projRow || typeof projRow !== 'object') throw new Error('Project not found.')
   const proj = projRow as { kerf_mm?: unknown; data?: unknown }
@@ -493,6 +497,7 @@ async function fetchProjectEditorStateFromRemote(projectId: string): Promise<Pro
     .select('client_row_id, height_cm, width_cm, length_cm, quantity, name')
     .eq('project_id', id)
     .order('sort_order', { ascending: true })
+    .abortSignal(signal)
 
   let partRows = partsRes.data
   if (partsRes.error) {
@@ -500,18 +505,23 @@ async function fetchProjectEditorStateFromRemote(projectId: string): Promise<Pro
     partRows = []
   }
 
+  throwIfAborted(signal)
+
   const stockRes = await supabase
     .from('project_stock_lengths')
     .select('material_key, sort_order, length_cm')
     .eq('project_id', id)
     .order('material_key', { ascending: true })
     .order('sort_order', { ascending: true })
+    .abortSignal(signal)
 
   let stockRows = stockRes.data
   if (stockRes.error) {
     if (!isMissingDbObject(stockRes.error)) throw new Error(stockRes.error.message)
     stockRows = []
   }
+
+  throwIfAborted(signal)
 
   let rows: ProjectEditorRow[] = (partRows ?? []).map((r) => ({
     id: r.client_row_id,
@@ -574,23 +584,31 @@ async function fetchProjectEditorStateFromRemote(projectId: string): Promise<Pro
   }
 }
 
+/** אות שמעולם לא מבוטל — לטעינות legacy בלי AbortController חיצוני. */
+const STATIC_NON_ABORTING = new AbortController().signal
+
 /**
  * Cache-first load with staleTime, deduplicated fetches, and optional background refresh callback.
+ * `signal` — ביטול טעינה (מעבר פרויקט / unmount); קריאות ל־onBackgroundFresh נחסמות אחרי abort.
  */
 export async function loadProjectEditorState(
   projectId: string,
   onBackgroundFresh?: (data: ProjectEditorPayload) => void,
+  signal?: AbortSignal,
 ): Promise<ProjectEditorPayload> {
   const id = String(projectId ?? '').trim()
   if (!id) throw new Error('Project id is required.')
+  throwIfAborted(signal)
 
-  return getProjectStateOrFetch(
-    id,
-    () => fetchProjectEditorStateFromRemote(id),
-    onBackgroundFresh
-      ? (d) => onBackgroundFresh(cloneEditorPayload(d))
-      : undefined,
-  )
+  const eff = signal ?? STATIC_NON_ABORTING
+  const wrapBg = onBackgroundFresh
+    ? (d: ProjectEditorPayload) => {
+        if (eff.aborted) return
+        onBackgroundFresh(cloneEditorPayload(d))
+      }
+    : undefined
+
+  return getProjectStateOrFetch(id, () => fetchProjectEditorStateFromRemote(id, eff), wrapBg, eff)
 }
 
 export async function renameProject(projectId: string, name: string): Promise<void> {

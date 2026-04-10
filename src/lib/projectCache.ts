@@ -1,3 +1,4 @@
+import { throwIfAborted } from './asyncGuards'
 import type { ProjectEditorPayload } from '../services/projects'
 
 /** Editor payload cached per project (alias for clarity in this module). */
@@ -75,6 +76,7 @@ export function refreshProjectStateInBackground(
   projectId: string,
   fetcher: () => Promise<ProjectEditorState>,
   onUpdate?: (data: ProjectEditorState) => void,
+  signal?: AbortSignal,
 ): void {
   const id = String(projectId ?? '').trim()
   if (!id) return
@@ -82,18 +84,22 @@ export function refreshProjectStateInBackground(
   const entry = cache.get(id)
   if (entry?.promise) {
     void entry.promise
-      .then((d) => onUpdate?.(cloneProjectEditorState(d)))
+      .then((d) => {
+        if (signal?.aborted) return
+        onUpdate?.(cloneProjectEditorState(d))
+      })
       .catch(() => {})
     return
   }
 
   const pending = fetcher()
     .then((data) => {
+      if (signal?.aborted) return data
       cache.set(id, {
         data: cloneProjectEditorState(data),
         fetchedAt: Date.now(),
       })
-      onUpdate?.(cloneProjectEditorState(data))
+      if (!signal?.aborted) onUpdate?.(cloneProjectEditorState(data))
       return data
     })
     .finally(() => {
@@ -115,9 +121,11 @@ export async function getProjectStateOrFetch(
   projectId: string,
   fetcher: () => Promise<ProjectEditorState>,
   onBackgroundUpdate?: (data: ProjectEditorState) => void,
+  signal?: AbortSignal,
 ): Promise<ProjectEditorState> {
   const id = String(projectId ?? '').trim()
   if (!id) throw new Error('Project id is required.')
+  throwIfAborted(signal)
 
   const entry = cache.get(id)
   const now = Date.now()
@@ -130,21 +138,26 @@ export async function getProjectStateOrFetch(
     }
     if (entry.promise) {
       void entry.promise
-        .then((d) => onBackgroundUpdate?.(cloneProjectEditorState(d)))
+        .then((d) => {
+          if (signal?.aborted) return
+          onBackgroundUpdate?.(cloneProjectEditorState(d))
+        })
         .catch(() => {})
       return cloneProjectEditorState(entry.data)
     }
-    refreshProjectStateInBackground(id, fetcher, onBackgroundUpdate)
+    refreshProjectStateInBackground(id, fetcher, onBackgroundUpdate, signal)
     return cloneProjectEditorState(entry.data)
   }
 
   if (entry?.promise) {
     const data = await entry.promise
+    throwIfAborted(signal)
     return cloneProjectEditorState(data)
   }
 
   const pending = fetcher()
     .then((data) => {
+      if (signal?.aborted) return data
       cache.set(id, {
         data: cloneProjectEditorState(data),
         fetchedAt: Date.now(),
@@ -165,6 +178,16 @@ export async function getProjectStateOrFetch(
     promise: pending,
   })
 
-  const data = await pending
+  let data: ProjectEditorState
+  try {
+    data = await pending
+  } catch (e) {
+    if (signal?.aborted) {
+      const cur = cache.get(id)
+      if (cur?.data) return cloneProjectEditorState(cur.data)
+    }
+    throw e
+  }
+  throwIfAborted(signal)
   return cloneProjectEditorState(data)
 }

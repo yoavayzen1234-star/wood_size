@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { User } from '@supabase/supabase-js'
+import { isAbortError } from '../lib/asyncGuards'
 import { signOut } from '../services/auth'
 import {
   createProject,
@@ -15,23 +16,36 @@ export function DashboardPage({ user, onLoggedOut }: { user: User | null; onLogg
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const refresh = async () => {
+  const refreshAbortRef = useRef<AbortController | null>(null)
+  const refreshGenRef = useRef(0)
+
+  const refresh = useCallback(async () => {
+    refreshAbortRef.current?.abort()
+    const ac = new AbortController()
+    refreshAbortRef.current = ac
+    const gen = ++refreshGenRef.current
     setError(null)
     setBusy(true)
     try {
-      const list = await getProjects()
+      const list = await getProjects(ac.signal)
+      if (gen !== refreshGenRef.current || ac.signal.aborted) return
       setProjects(list)
     } catch (e) {
+      if (ac.signal.aborted || isAbortError(e)) return
       setError(e instanceof Error ? e.message : String(e))
     } finally {
-      setBusy(false)
+      if (gen === refreshGenRef.current && !ac.signal.aborted) {
+        setBusy(false)
+      }
     }
-  }
+  }, [])
 
   useEffect(() => {
     void refresh()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+    return () => {
+      refreshAbortRef.current?.abort()
+    }
+  }, [refresh])
 
   const onCreate = async () => {
     if (projects.length >= MAX_USER_PROJECTS_FRONTEND) {

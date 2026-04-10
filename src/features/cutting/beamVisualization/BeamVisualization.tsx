@@ -5,6 +5,7 @@ import { LtrNum } from '../../../LtrNum'
 import {
   parseDraftPositiveCm,
   profileMaterialKey,
+  woodTypeKey,
   type DraftRow,
 } from '../../../lib/draftRows'
 
@@ -26,7 +27,7 @@ export function resolvePartLabelForDisplay(
     const w = parseDraftPositiveCm(r.widthCm)
     const len = parseDraftPositiveCm(r.lengthCm)
     if (h == null || w == null || len == null) return false
-    if (profileMaterialKey(h, w) !== beam.material) return false
+    if (beam.material !== woodTypeKey(w, h) && beam.material !== profileMaterialKey(h, w)) return false
     return Math.abs(len * 10 - segLengthMm) < 0.5
   })
   if (matching.length === 1) {
@@ -41,10 +42,13 @@ function formatDraftingLengthCm(lengthMm: number): string {
   return (lengthMm / 10).toFixed(1)
 }
 
-function beamSegmentFlexStyle(lengthMm: number): CSSProperties {
+/** יחס flex זהה בשכבת הקורה ובשכבת המידות — mm כיחסי grow (סה״כ = אורך קורה) */
+function beamSegmentFlexStyle(flexBasisMm: number): CSSProperties {
   return {
-    flex: `${Math.max(lengthMm, 0.001)} 1 0%`,
-    minWidth: 1,
+    flexGrow: Math.max(flexBasisMm, 0.001),
+    flexShrink: 1,
+    flexBasis: '0%',
+    minWidth: 0,
     minHeight: 0,
   }
 }
@@ -69,105 +73,201 @@ function DimLtrNum({
   )
 }
 
-type MergedBeamDimCol =
-  | { kind: 'part'; key: string; flexMm: number; lengthMm: number }
-  | { kind: 'waste'; key: string; flexMm: number; lengthMm: number }
-
-function mergedBeamDimColumns(beam: PackedBeam): MergedBeamDimCol[] {
-  const out: MergedBeamDimCol[] = []
-  let partIdx = 0
-  for (let i = 0; i < beam.segments.length; ) {
-    const seg = beam.segments[i]
-    if (seg.kind !== 'part') {
+/** פריסת חלק + מסור שאחריו (אם יש) — ליישור מידות עם פס הקורה */
+function slicePartFlexSlices(beam: PackedBeam): { lengthMm: number; flexMm: number }[] {
+  const out: { lengthMm: number; flexMm: number }[] = []
+  const segs = beam.segments
+  let i = 0
+  while (i < segs.length) {
+    const s = segs[i]!
+    if (s.kind !== 'part') {
       i++
       continue
     }
-    let flexMm = seg.lengthMm
-    const keyBase = i
+    let flexMm = s.lengthMm
     i++
-    if (i < beam.segments.length && beam.segments[i]!.kind === 'kerf') {
-      flexMm += beam.segments[i]!.lengthMm
+    if (i < segs.length && segs[i]!.kind === 'kerf') {
+      flexMm += segs[i]!.lengthMm
       i++
     }
-    out.push({
-      kind: 'part',
-      key: `dim-part-${keyBase}-${partIdx++}`,
-      flexMm,
-      lengthMm: seg.lengthMm,
-    })
-  }
-  if (beam.wasteMm > 0) {
-    out.push({ kind: 'waste', key: 'dim-waste', flexMm: beam.wasteMm, lengthMm: beam.wasteMm })
+    out.push({ lengthMm: s.lengthMm, flexMm })
   }
   return out
 }
 
-function ArchDimUnderSegment({
-  lengthMm,
+type DimCol =
+  | {
+      kind: 'partGroup'
+      key: string
+      flexMm: number
+      lengthMm: number
+      count: number
+    }
+  | { kind: 'waste'; key: string; flexMm: number; lengthMm: number }
+
+/** קיבוץ חלקים עוקבים באותו אורך — שורת מידות אחת לכל קבוצה */
+function buildDimensionColumns(beam: PackedBeam): DimCol[] {
+  const slices = slicePartFlexSlices(beam)
+  const cols: DimCol[] = []
+  let g = 0
+  let keyIdx = 0
+  while (g < slices.length) {
+    const len = slices[g]!.lengthMm
+    let totalFlex = slices[g]!.flexMm
+    let count = 1
+    g++
+    while (g < slices.length && slices[g]!.lengthMm === len) {
+      totalFlex += slices[g]!.flexMm
+      count++
+      g++
+    }
+    cols.push({
+      kind: 'partGroup',
+      key: `dim-grp-${keyIdx++}-${len}-${count}`,
+      flexMm: totalFlex,
+      lengthMm: len,
+      count,
+    })
+  }
+  if (beam.wasteMm > 0) {
+    cols.push({ kind: 'waste', key: 'dim-waste', flexMm: beam.wasteMm, lengthMm: beam.wasteMm })
+  }
+  return cols
+}
+
+function totalDimFlexMm(cols: DimCol[]): number {
+  let s = 0
+  for (const c of cols) s += c.flexMm
+  return s
+}
+
+/** אחוזי גבול לאורך ציר המידות (0 … 100) — קצה שמאל, בין עמודות, קצה ימין (שארית) */
+function dimensionTickPositionsPercent(cols: DimCol[], totalFlexMm: number): number[] {
+  if (cols.length === 0) return [0, 100]
+  const pct: number[] = [0]
+  let cum = 0
+  for (const c of cols) {
+    cum += c.flexMm
+    pct.push(totalFlexMm > 0 ? (cum / totalFlexMm) * 100 : 100)
+  }
+  pct[pct.length - 1] = 100
+  return pct
+}
+
+const DIM_AXIS_COLOR = '#94a3b8'
+
+/** תווית מתחת לציר — רק הטקסט נדחף לשארית; רוחב העמודה = אותו flex כמו בפס */
+function ArchDimLabelCell({
+  flexMm,
+  totalFlexMm,
+  label,
   ariaLabel,
-  tone = 'dark',
-  showNumber = true,
-  isFirstColumn = false,
+  isWaste = false,
 }: {
-  lengthMm: number
+  flexMm: number
+  totalFlexMm: number
+  label: string
   ariaLabel: string
-  tone?: 'dark' | 'waste'
-  showNumber?: boolean
-  isFirstColumn?: boolean
+  isWaste?: boolean
 }) {
-  const line = tone === 'waste' ? 'bg-slate-600 print:bg-black' : 'bg-zinc-800 print:bg-black'
-  const text = tone === 'waste' ? 'text-slate-800 print:text-black' : 'text-zinc-900 print:text-black'
-  const t = formatDraftingLengthCm(lengthMm)
+  const text = isWaste ? 'text-slate-700' : 'text-zinc-700'
+  const ratio = totalFlexMm > 0 ? flexMm / totalFlexMm : 0
+  const narrow = ratio < 0.07 || flexMm < 32
+  const fontClass = narrow ? 'text-[9px] sm:text-[10px]' : 'text-[10px] sm:text-[11px]'
+
   return (
-    <div className="flex w-full min-w-0 flex-col gap-1 px-0">
-      <div className="relative h-[6px] w-full min-w-0 shrink-0">
-        <div className={`absolute inset-x-0 top-1/2 h-px -translate-y-1/2 ${line}`} />
-        {isFirstColumn ? (
-          <div className={`absolute left-0 top-1/2 h-[6px] w-[1.5px] -translate-y-1/2 ${line}`} />
-        ) : null}
-        <div className={`absolute right-0 top-1/2 h-[6px] w-[1.5px] -translate-y-1/2 ${line}`} />
-      </div>
-      {showNumber ? (
-        <div
-          className="flex min-h-[1.25rem] w-full min-w-0 items-start justify-center overflow-visible py-0"
-          dir="ltr"
-        >
-          <span className="whitespace-nowrap font-mono text-[10px] font-semibold leading-none tabular-nums sm:text-[11px]">
-            <DimLtrNum className={text} ariaLabel={ariaLabel}>
-              {t}
-            </DimLtrNum>
-          </span>
-        </div>
-      ) : (
-        <div className="min-h-[1.25rem] w-full shrink-0 py-0" aria-hidden />
-      )}
+    <div
+      className="flex min-h-[1.125rem] w-full min-w-0 items-start justify-center overflow-visible py-0 pt-1 text-center sm:min-h-[1.25rem]"
+      dir="ltr"
+    >
+      <span
+        className={`max-w-full whitespace-nowrap font-mono font-medium leading-none tabular-nums ${fontClass} ${
+          isWaste ? 'inline-block translate-x-5' : ''
+        }`.trim()}
+      >
+        <DimLtrNum className={text} ariaLabel={ariaLabel}>
+          {label}
+        </DimLtrNum>
+      </span>
     </div>
   )
 }
 
 function BeamArchitectDimRow({ beam }: { beam: PackedBeam }) {
-  const cols = mergedBeamDimColumns(beam)
+  const cols = buildDimensionColumns(beam)
+  const totalFlex = totalDimFlexMm(cols)
+  const tickPct = dimensionTickPositionsPercent(cols, totalFlex)
+  const nTicks = tickPct.length
+
   return (
     <div
-      className="mt-1 w-full min-w-0 border-b border-zinc-300/80 bg-[#fafafa] px-0 py-1.5 print:border-zinc-300 print:bg-white"
+      className="mt-0.5 w-full min-w-0 border-b border-zinc-300/70 bg-[#fafafa] px-0 py-1 print:border-zinc-300 print:bg-white sm:mt-1 sm:py-1.5"
       dir="ltr"
       aria-hidden
     >
-      <div className="flex w-full min-w-0 gap-0">
-        {cols.map((col, idx) => (
-          <div key={col.key} className="min-w-px shrink" style={beamSegmentFlexStyle(col.flexMm)}>
-            <ArchDimUnderSegment
-              lengthMm={col.lengthMm}
-              isFirstColumn={idx === 0}
-              tone={col.kind === 'waste' ? 'waste' : 'dark'}
-              ariaLabel={
-                col.kind === 'waste'
-                  ? `אורך שארית ${formatDraftingLengthCm(col.lengthMm)} סנטימטר`
-                  : `אורך ${formatDraftingLengthCm(col.lengthMm)} סנטימטר`
-              }
-            />
-          </div>
-        ))}
+      <div className="relative w-full min-w-0">
+        {/* ציר אופקי רציף אחד + סימונים אנכיים על הגבולות — רוחב זהה לשורת flex מתחת */}
+        <div className="relative h-[8px] w-full min-w-0 shrink-0">
+          <div
+            className="pointer-events-none absolute left-0 right-0 top-1/2 h-px -translate-y-1/2"
+            style={{ backgroundColor: DIM_AXIS_COLOR }}
+          />
+          {tickPct.map((pct, i) => {
+            const isFirst = i === 0
+            const isLast = i === nTicks - 1
+            return (
+              <div
+                key={`tick-${i}-${pct}`}
+                className="pointer-events-none absolute top-1/2 w-px -translate-y-1/2"
+                style={{
+                  left: isFirst ? 0 : isLast ? '100%' : `${pct}%`,
+                  height: 5,
+                  backgroundColor: DIM_AXIS_COLOR,
+                  transform: isFirst
+                    ? 'translateY(-50%)'
+                    : isLast
+                      ? 'translate(-100%, -50%)'
+                      : 'translate(-50%, -50%)',
+                }}
+              />
+            )
+          })}
+        </div>
+
+        <div className="flex w-full min-w-0 gap-0 box-border">
+          {cols.map((col) => (
+            <div
+              key={col.key}
+              className={`min-w-0 shrink overflow-visible ${col.kind === 'waste' ? 'relative z-[2]' : ''}`.trim()}
+              style={beamSegmentFlexStyle(col.flexMm)}
+            >
+              {col.kind === 'waste' ? (
+                <ArchDimLabelCell
+                  flexMm={col.flexMm}
+                  totalFlexMm={totalFlex}
+                  isWaste
+                  label={formatDraftingLengthCm(col.lengthMm)}
+                  ariaLabel={`אורך שארית ${formatDraftingLengthCm(col.lengthMm)} סנטימטר`}
+                />
+              ) : (
+                <ArchDimLabelCell
+                  flexMm={col.flexMm}
+                  totalFlexMm={totalFlex}
+                  label={
+                    col.count > 1
+                      ? `${formatDraftingLengthCm(col.lengthMm)} × ${col.count}`
+                      : formatDraftingLengthCm(col.lengthMm)
+                  }
+                  ariaLabel={
+                    col.count > 1
+                      ? `אורך ${formatDraftingLengthCm(col.lengthMm)} סנטימטר, ${col.count} חלקים`
+                      : `אורך ${formatDraftingLengthCm(col.lengthMm)} סנטימטר`
+                  }
+                />
+              )}
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   )
@@ -254,28 +354,32 @@ export const BeamVisualization = memo(function BeamVisualization({
         </span>
       </div>
 
-      <div className="w-full min-w-0 max-w-full overflow-x-hidden rounded-md px-1 py-2 sm:px-2 sm:py-2.5">
+      <div className="w-full min-w-0 max-w-full overflow-x-clip rounded-md px-2 py-1.5 sm:px-2 sm:py-2.5">
+        {/*
+          מיכל אחד לפס קורה + מידות: אותו רוחב פנימי, ריפוד סימטרי בלבד (ללא pr נוסף לשארית),
+          gap-0 — כדי שיישור flex יזהה בין שכבות.
+        */}
         <div
-          className="flex h-[20px] w-full min-w-0 max-w-full gap-0 overflow-hidden rounded-sm border border-solid border-[#ccc] bg-[#fdfdfd] print:border-zinc-400 print:bg-white"
+          className="flex h-[18px] w-full min-w-0 max-w-full gap-0 overflow-hidden rounded-sm border border-solid border-[#ccc] bg-[#fdfdfd] box-border print:border-zinc-400 print:bg-white sm:h-[20px]"
           dir="ltr"
         >
           {beam.segments.map((seg, i) =>
             seg.kind === 'kerf' ? (
               <div
                 key={i}
-                className="relative box-border min-w-px shrink"
+                className="relative min-w-0 shrink box-border"
                 style={beamSegmentFlexStyle(seg.lengthMm)}
                 aria-hidden
               >
                 <div
-                  className="pointer-events-none absolute inset-y-0 left-1/2 z-[1] w-[1.5px] -translate-x-1/2 bg-[#333] print:bg-black"
+                  className="pointer-events-none absolute inset-y-0 left-1/2 z-[1] w-px -translate-x-1/2 bg-zinc-600 print:bg-black"
                   aria-hidden
                 />
               </div>
             ) : (
               <div
                 key={i}
-                className="box-border min-w-px shrink"
+                className="min-w-0 shrink box-border"
                 style={beamSegmentFlexStyle(seg.lengthMm)}
               >
                 <PartBeamCell
@@ -287,7 +391,7 @@ export const BeamVisualization = memo(function BeamVisualization({
           )}
           {beam.wasteMm > 0 && (
             <div
-              className="box-border min-w-px shrink border-l-[1.5px] border-solid border-l-[#333] bg-[#94a3b8] print:bg-slate-400"
+              className="min-w-0 shrink box-border border-l border-solid border-l-zinc-600 bg-[#94a3b8] print:bg-slate-400"
               style={beamSegmentFlexStyle(beam.wasteMm)}
               aria-label="שארית"
               title="שארית"
@@ -295,16 +399,14 @@ export const BeamVisualization = memo(function BeamVisualization({
           )}
         </div>
         <BeamArchitectDimRow beam={beam} />
-        <div className="border-x border-b border-stone-200/80 bg-stone-50/70 print:border-zinc-300 print:bg-white">
-          <p className="border-t border-stone-200/90 px-2 py-1 text-center text-sm font-semibold text-stone-900 print:border-zinc-300 print:text-black sm:text-base">
-            <LtrNum
-              className="text-base font-semibold sm:text-lg"
-              ariaLabel={`אורך קורה ${lengthMetersDisplay} מטר`}
-            >
-              {lengthMetersDisplay}
-            </LtrNum>
-          </p>
-        </div>
+        <p className="pt-1.5 text-center text-sm font-medium text-stone-500 tabular-nums print:text-black sm:pt-2 sm:text-base">
+          <LtrNum
+            className="text-base font-medium text-stone-500 print:text-black sm:text-lg"
+            ariaLabel={`אורך קורה ${lengthMetersDisplay} מטר`}
+          >
+            {lengthMetersDisplay}
+          </LtrNum>
+        </p>
       </div>
     </article>
   )

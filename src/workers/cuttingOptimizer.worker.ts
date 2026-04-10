@@ -14,9 +14,9 @@ export type CuttingWorkerResponse =
   | { ok: true; result: CatalogOptimizationResult }
   | { ok: false; message: string }
 
-self.onmessage = (e: MessageEvent<CuttingWorkerRequest>) => {
+self.onmessage = async (e: MessageEvent<CuttingWorkerRequest>) => {
   try {
-    const result = solveExactStoreCatalog(
+    const result = await solveExactStoreCatalog(
       e.data.parts,
       e.data.kerfMm,
       e.data.storeStockLengthsCm,

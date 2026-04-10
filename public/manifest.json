@@ -1,0 +1,35 @@
+{
+  "id": "/",
+  "name": "אופטימיזציית חיתוך קורות",
+  "short_name": "חיתוך קורות",
+  "description": "מחשבון חיתוך, רשימת קניות ותוכנית קורות — דורש חיבור לאינטרנט.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["standalone", "browser"],
+  "background_color": "#fafaf9",
+  "theme_color": "#863bff",
+  "orientation": "any",
+  "lang": "he",
+  "dir": "rtl",
+  "icons": [
+    {
+      "src": "/icons/pwa-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/pwa-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/pwa-512-maskable.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

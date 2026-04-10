@@ -23,6 +23,7 @@ import {
 } from '../lib/cuttingOptimizer'
 import {
   emptyDraftRow,
+  legacyKeyFromWoodTypeKey,
   normalizePartRows,
   type DraftRow,
 } from '../lib/draftRows'
@@ -71,6 +72,9 @@ export function useProjectEditor(
   const editorHydratedProjectIdRef = useRef<string | null>(null)
   const lastPersistedRef = useRef<ProjectEditorPayload | null>(null)
   const editorSaveDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /** מונה ריצות useEffect לטעינת עורך — רק הריצה האחרונה רשאית לעדכן state. */
+  const editorLoadEffectRunRef = useRef(0)
+  const editorLoadAbortRef = useRef<AbortController | null>(null)
 
   const currentProjectData = useCallback(() => {
     return { kerfMm, rows, storeStockLengthsCm, storeStockLengthsByMaterial }
@@ -82,7 +86,11 @@ export function useProjectEditor(
 
   useEffect(() => {
     const id = activeProject?.id
+    const effectRun = ++editorLoadEffectRunRef.current
+
     if (!id) {
+      editorLoadAbortRef.current?.abort()
+      editorLoadAbortRef.current = null
       editorHydratedProjectIdRef.current = null
       lastPersistedRef.current = null
       return
@@ -102,39 +110,44 @@ export function useProjectEditor(
       return
     }
 
+    editorLoadAbortRef.current?.abort()
+    const ac = new AbortController()
+    editorLoadAbortRef.current = ac
+
     editorHydratedProjectIdRef.current = null
     lastPersistedRef.current = null
-    let cancelled = false
     setKerfMm(0)
     setRows(normalizePartRows([emptyDraftRow()]))
     setStoreStockLengthsCm(normalizeStoreStockLengthsCm([...DEFAULT_STORE_STOCK_LENGTHS_CM]))
     setStoreStockLengthsByMaterial({})
     clearOptimizationResult()
-    void loadProjectEditorState(id, (state) => {
-      if (cancelled) return
+
+    const applyLoaded = (state: ProjectEditorPayload) => {
+      if (editorLoadEffectRunRef.current !== effectRun) return
       if (activeProjectIdRef.current !== id) return
+      if (ac.signal.aborted) return
       setKerfMm(state.kerfMm)
       setRows(normalizePartRows(state.rows as DraftRow[]))
       setStoreStockLengthsCm(normalizeStoreStockLengthsCm(state.storeStockLengthsCm))
       setStoreStockLengthsByMaterial(state.storeStockLengthsByMaterial)
       editorHydratedProjectIdRef.current = id
       lastPersistedRef.current = cloneEditorPayload(state)
-    })
+    }
+
+    void loadProjectEditorState(id, applyLoaded, ac.signal)
       .then((state) => {
-        if (cancelled) return
-        setKerfMm(state.kerfMm)
-        setRows(normalizePartRows(state.rows as DraftRow[]))
-        setStoreStockLengthsCm(normalizeStoreStockLengthsCm(state.storeStockLengthsCm))
-        setStoreStockLengthsByMaterial(state.storeStockLengthsByMaterial)
-        editorHydratedProjectIdRef.current = id
-        lastPersistedRef.current = cloneEditorPayload(state)
+        applyLoaded(state)
       })
       .catch(() => {
-        if (cancelled) return
+        if (editorLoadEffectRunRef.current !== effectRun) return
+        if (activeProjectIdRef.current !== id) return
+        if (ac.signal.aborted) return
         editorHydratedProjectIdRef.current = id
       })
+
     return () => {
-      cancelled = true
+      ac.abort()
+      if (editorLoadAbortRef.current === ac) editorLoadAbortRef.current = null
     }
   }, [activeProject?.id, clearOptimizationResult])
 
@@ -148,9 +161,9 @@ export function useProjectEditor(
       if (editorHydratedProjectIdRef.current !== id) return
       const next = cloneEditorPayload(currentProjectData())
       void persistProjectEditorIfChanged(id, lastPersistedRef.current, next).then((r) => {
-        if (r === 'saved') {
-          lastPersistedRef.current = cloneEditorPayload(currentProjectData())
-        }
+        if (r !== 'saved') return
+        if (editorHydratedProjectIdRef.current !== id) return
+        lastPersistedRef.current = cloneEditorPayload(next)
       })
     }, 650)
     return () => {
@@ -171,14 +184,18 @@ export function useProjectEditor(
     if (editorHydratedProjectIdRef.current !== id) return
     const next = cloneEditorPayload(currentProjectData())
     const r = await persistProjectEditorIfChanged(id, lastPersistedRef.current, next)
-    if (r === 'saved') {
-      lastPersistedRef.current = cloneEditorPayload(currentProjectData())
+    if (r === 'saved' && editorHydratedProjectIdRef.current === id) {
+      lastPersistedRef.current = cloneEditorPayload(next)
     }
   }, [activeProject?.id, currentProjectData])
 
   const openMaterialStockEditor = useCallback(
     (materialKey: string) => {
-      const current = storeStockLengthsByMaterial[materialKey] ?? storeStockLengthsCm
+      const legacy = legacyKeyFromWoodTypeKey(materialKey)
+      const current =
+        storeStockLengthsByMaterial[materialKey] ??
+        (legacy != null ? storeStockLengthsByMaterial[legacy] : undefined) ??
+        storeStockLengthsCm
       setEditingMaterialKey(materialKey)
       setMaterialStockDraft(normalizeStoreStockLengthsCm(current))
       materialStockInputRefs.current = []
@@ -197,9 +214,11 @@ export function useProjectEditor(
   const resetMaterialToDefault = useCallback(() => {
     const key = editingMaterialKey
     if (!key) return
+    const legacy = legacyKeyFromWoodTypeKey(key)
     setStoreStockLengthsByMaterial((prev) => {
       const next = { ...prev }
       delete next[key]
+      if (legacy) delete next[legacy]
       return next
     })
     setEditingMaterialKey(null)

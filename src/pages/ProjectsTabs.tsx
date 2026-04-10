@@ -1,5 +1,6 @@
 import { X } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from 'react'
+import { isAbortError } from '../lib/asyncGuards'
 import {
   createProject,
   deleteProject,
@@ -44,13 +45,26 @@ export function ProjectsTabs({
   } | null>(null)
 
   const deletingRef = useRef(false)
+  const refreshAbortRef = useRef<AbortController | null>(null)
+  const refreshGenRef = useRef(0)
 
-  const refresh = async () => {
+  const refresh = useCallback(async () => {
+    refreshAbortRef.current?.abort()
+    const ac = new AbortController()
+    refreshAbortRef.current = ac
+    const gen = ++refreshGenRef.current
     setError(null)
-    const list = await getProjects()
-    setProjects(list)
-    return list
-  }
+    try {
+      const list = await getProjects(ac.signal)
+      if (gen !== refreshGenRef.current || ac.signal.aborted) return list
+      setProjects(list)
+      return list
+    } catch (e) {
+      if (ac.signal.aborted || isAbortError(e)) return []
+      setError(e instanceof Error ? e.message : String(e))
+      throw e
+    }
+  }, [])
 
   useEffect(() => {
     if (prefetchedProjects !== undefined) {
@@ -72,7 +86,9 @@ export function ProjectsTabs({
           })()
         }
       }
-      return
+      return () => {
+        refreshAbortRef.current?.abort()
+      }
     }
 
     void refresh()
@@ -95,6 +111,9 @@ export function ProjectsTabs({
         })()
       })
       .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+    return () => {
+      refreshAbortRef.current?.abort()
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 

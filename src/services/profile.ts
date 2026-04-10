@@ -1,3 +1,4 @@
+import { throwIfAborted } from '../lib/asyncGuards'
 import { supabase } from '../lib/supabase'
 
 export type UserProfile = {
@@ -7,14 +8,18 @@ export type UserProfile = {
   created_at: string
 }
 
-export async function getMyProfile(): Promise<UserProfile | null> {
+export async function getMyProfile(signal?: AbortSignal): Promise<UserProfile | null> {
   if (!supabase) return null
+  throwIfAborted(signal)
   const { data: authData, error: authErr } = await supabase.auth.getUser()
+  throwIfAborted(signal)
   if (authErr) throw new Error(authErr.message)
   const uid = authData.user?.id
   if (!uid) return null
 
-  const { data, error } = await supabase.from('users').select('*').eq('id', uid).single<UserProfile>()
+  let q = supabase.from('users').select('*').eq('id', uid)
+  if (signal) q = q.abortSignal(signal)
+  const { data, error } = await q.single<UserProfile>()
   if (error) throw new Error(error.message)
   return data ?? null
 }

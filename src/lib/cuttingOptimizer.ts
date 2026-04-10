@@ -64,6 +64,15 @@ export type ShoppingGroup = {
   lines: ShoppingLine[]
 }
 
+export type WoodTypeOptimizationSummary = {
+  woodTypeKey: string
+  solverKind?: 'exact-dp' | 'heuristic-best-fit'
+  solverNote?: string
+  beamsUsed: number
+  wastePercent: number
+  totalPurchaseLengthCm: number
+}
+
 export type CatalogOptimizationResult = OptimizationResult & {
   mode: 'store-catalog'
   shoppingList: ShoppingGroup[]
@@ -71,6 +80,12 @@ export type CatalogOptimizationResult = OptimizationResult & {
   solverKind?: 'exact-dp' | 'heuristic-best-fit'
   /** הערה למשתמש (למשל נפילה ל־heuristic בגלל גודל) */
   solverNote?: string
+  /** משך חישוב הסולבר (מילישניות) */
+  solveTimeMs?: number
+  /** משך חישוב בשניות, מעוגל לשתי ספרות אחרי הנקודה */
+  solveTimeSeconds?: number
+  /** מופיע רק אחרי מיזוג מספר סוגי עץ במקביל */
+  woodTypeBreakdown?: WoodTypeOptimizationSummary[]
 }
 
 const cmToMm = (cm: number) => cm * 10

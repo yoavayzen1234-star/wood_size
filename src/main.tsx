@@ -3,6 +3,17 @@ import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
 
+function registerMinimalServiceWorker() {
+  if (!('serviceWorker' in navigator)) return
+  window.addEventListener('load', () => {
+    void navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(() => {
+      /* registration optional; ignore on unsupported contexts */
+    })
+  })
+}
+
+registerMinimalServiceWorker()
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <App />
