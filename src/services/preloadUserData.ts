@@ -24,12 +24,11 @@ function readLastProjectId(): string | null {
   }
 }
 
-/**
- * אחרי התחברות: פרופיל + רשימת פרויקטים קלה, טעינה חוסמת של הפרויקט האחרון שנפתח,
- * ואז טעינת שאר הפרויקטים במקביל ברקע (למטמון — בלי לחסום UI).
- * `signal` — ביטול כל הרשת (למשל unmount לפני סיום); לא מעדכן state אחרי abort.
- */
-export async function preloadUserWorkspaceData(signal?: AbortSignal): Promise<UserWorkspaceBootstrap> {
+/** פרופיל + רשימת פרויקטים בלבד — בלי חסימה על טעינת עורך. */
+export async function fetchUserWorkspaceCore(signal?: AbortSignal): Promise<{
+  profile: UserProfile | null
+  projects: Project[]
+}> {
   throwIfAborted(signal)
 
   const [profile, projects] = await Promise.all([
@@ -38,29 +37,35 @@ export async function preloadUserWorkspaceData(signal?: AbortSignal): Promise<Us
   ])
 
   throwIfAborted(signal)
+  return { profile, projects }
+}
 
-  if (!projects.length) {
-    return { profile, projects, editorByProjectId: {} }
-  }
+/**
+ * מתחיל טעינת מצבי עורך לרקע (ממלא את מטמון הזיכרון ב־projectCache).
+ * לא מחכים לסיום — ה־UI נשען על useProjectEditor + loadProjectEditorState.
+ */
+export function startEditorBackgroundPrefetch(projects: Project[], signal?: AbortSignal): void {
+  if (!projects.length) return
 
   const lastProjectId = readLastProjectId()
   const lastProject = projects.find((p) => p.id === lastProjectId) ?? projects[0]!
 
-  const editorByProjectId: Record<string, ProjectEditorPayload> = {}
-
-  try {
-    const current = await loadProjectEditorState(lastProject.id, undefined, signal)
-    editorByProjectId[lastProject.id] = current
-  } catch {
-    /* העורך יטען מחדש מהרשת או מהמטמון ב־AuthedApp */
-  }
-
-  throwIfAborted(signal)
+  void loadProjectEditorState(lastProject.id, undefined, signal).catch(() => {
+    /* העורך ייטען שוב מהרשת או מהמטמון */
+  })
 
   const rest = projects.filter((p) => p.id !== lastProject.id)
   void Promise.all(
     rest.map((p) => loadProjectEditorState(p.id, undefined, signal).catch(() => null)),
   )
+}
 
-  return { profile, projects, editorByProjectId }
+/**
+ * אחרי התחברות: פרופיל + פרויקטים במקביל; מצבי עורך נטענים ברקע בלבד (לא חוסמים החזרה).
+ * `signal` — ביטול רשת; לא מעדכן state אחרי abort.
+ */
+export async function preloadUserWorkspaceData(signal?: AbortSignal): Promise<UserWorkspaceBootstrap> {
+  const { profile, projects } = await fetchUserWorkspaceCore(signal)
+  startEditorBackgroundPrefetch(projects, signal)
+  return { profile, projects, editorByProjectId: {} }
 }

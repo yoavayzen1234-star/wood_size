@@ -9,7 +9,14 @@ const AuthedCalculatorPage = lazy(() =>
 )
 import { isAbortError } from './lib/asyncGuards'
 import { clearProjectCache } from './lib/projectCache'
+import {
+  clearWorkspaceLocalCache,
+  isWorkspaceLocalCacheFresh,
+  readWorkspaceLocalCache,
+  writeWorkspaceLocalCache,
+} from './lib/workspaceLocalCache'
 import type { UserWorkspaceBootstrap } from './services/preloadUserData'
+import { preloadUserWorkspaceData } from './services/preloadUserData'
 import { getCurrentUser, signOut } from './services/auth'
 
 function welcomeFromBootstrap(boot: UserWorkspaceBootstrap, authUser: User): string {
@@ -22,9 +29,11 @@ function welcomeFromBootstrap(boot: UserWorkspaceBootstrap, authUser: User): str
 
 function AppRouteFallback() {
   return (
-    <div className="mx-auto max-w-lg px-4 py-10">
-      <div className="rounded-2xl border border-stone-200 bg-white p-6 text-sm text-stone-700 shadow-sm">
-        טוען…
+    <div className="mx-auto min-h-[40vh] max-w-lg px-4 py-10" aria-busy="true" aria-label="טוען">
+      <div className="space-y-3 rounded-2xl border border-stone-200 bg-white p-6 shadow-sm">
+        <div className="h-4 w-3/4 max-w-md animate-pulse rounded bg-stone-200" />
+        <div className="h-4 w-1/2 max-w-xs animate-pulse rounded bg-stone-200" />
+        <div className="h-24 animate-pulse rounded-lg bg-stone-100" />
       </div>
     </div>
   )
@@ -35,15 +44,38 @@ export default function App() {
   const [workspaceBootstrap, setWorkspaceBootstrap] = useState<UserWorkspaceBootstrap | null>(null)
   const [authLoading, setAuthLoading] = useState(true)
   const [welcomeName, setWelcomeName] = useState<string>('אורח')
+  const [workspaceRemoteHydrated, setWorkspaceRemoteHydrated] = useState(false)
 
-  /** ביטול טעינת workspace קודמת (init / התחברות חוזרת / unmount). */
   const workspacePreloadAbortRef = useRef<AbortController | null>(null)
+  const remoteRunGenRef = useRef(0)
 
   const beginWorkspacePreload = useCallback(() => {
     workspacePreloadAbortRef.current?.abort()
     const ac = new AbortController()
     workspacePreloadAbortRef.current = ac
     return ac
+  }, [])
+
+  const runWorkspaceHydration = useCallback((user: User, ac: AbortController) => {
+    const uid = user.id
+    const runId = ++remoteRunGenRef.current
+    void (async () => {
+      try {
+        const boot = await preloadUserWorkspaceData(ac.signal)
+        if (ac.signal.aborted || runId !== remoteRunGenRef.current) return
+        setWorkspaceBootstrap(boot)
+        setWelcomeName(welcomeFromBootstrap(boot, user))
+        writeWorkspaceLocalCache(uid, { profile: boot.profile, projects: boot.projects })
+      } catch (e) {
+        if (ac.signal.aborted || isAbortError(e)) return
+        if (runId !== remoteRunGenRef.current) return
+        /* שומרים מצב קיים (למשל מ-cache) */
+      } finally {
+        if (!ac.signal.aborted && runId === remoteRunGenRef.current) {
+          setWorkspaceRemoteHydrated(true)
+        }
+      }
+    })()
   }, [])
 
   useEffect(() => {
@@ -55,25 +87,28 @@ export default function App() {
         if (!u) {
           setAuthUser(null)
           setWorkspaceBootstrap(null)
-          setAuthLoading(false)
+          setWorkspaceRemoteHydrated(false)
           return
         }
-        const { preloadUserWorkspaceData } = await import('./services/preloadUserData')
-        let boot: UserWorkspaceBootstrap
-        try {
-          boot = await preloadUserWorkspaceData(ac.signal)
-        } catch (e) {
-          if (ac.signal.aborted || isAbortError(e)) return
-          boot = { profile: null, projects: [], editorByProjectId: {} }
-        }
-        if (ac.signal.aborted) return
-        setWorkspaceBootstrap(boot)
-        setWelcomeName(welcomeFromBootstrap(boot, u))
+
+        const cached = readWorkspaceLocalCache(u.id)
+        const useCache = isWorkspaceLocalCacheFresh(cached)
+        const initialBoot: UserWorkspaceBootstrap =
+          useCache && cached
+            ? { profile: cached.profile, projects: cached.projects, editorByProjectId: {} }
+            : { profile: null, projects: [], editorByProjectId: {} }
+
         setAuthUser(u)
+        setWorkspaceBootstrap(initialBoot)
+        setWelcomeName(welcomeFromBootstrap(initialBoot, u))
+        setWorkspaceRemoteHydrated(false)
+
+        runWorkspaceHydration(u, ac)
       } catch (e) {
         if (ac.signal.aborted || isAbortError(e)) return
         setAuthUser(null)
         setWorkspaceBootstrap(null)
+        setWorkspaceRemoteHydrated(false)
       } finally {
         if (!ac.signal.aborted) {
           setAuthLoading(false)
@@ -84,53 +119,54 @@ export default function App() {
     return () => {
       ac.abort()
     }
-  }, [beginWorkspacePreload])
+  }, [beginWorkspacePreload, runWorkspaceHydration])
 
   const completeLoginAfterAuth = useCallback(async () => {
     const ac = beginWorkspacePreload()
-    setAuthLoading(true)
     try {
       const u = await getCurrentUser()
       if (ac.signal.aborted) return
       if (!u) {
         setAuthUser(null)
         setWorkspaceBootstrap(null)
+        setWorkspaceRemoteHydrated(false)
         return
       }
-      const { preloadUserWorkspaceData } = await import('./services/preloadUserData')
-      let boot: UserWorkspaceBootstrap
-      try {
-        boot = await preloadUserWorkspaceData(ac.signal)
-      } catch (e) {
-        if (ac.signal.aborted || isAbortError(e)) return
-        boot = { profile: null, projects: [], editorByProjectId: {} }
-      }
-      if (ac.signal.aborted) return
-      setWorkspaceBootstrap(boot)
-      setWelcomeName(welcomeFromBootstrap(boot, u))
+
+      const cached = readWorkspaceLocalCache(u.id)
+      const useCache = isWorkspaceLocalCacheFresh(cached)
+      const initialBoot: UserWorkspaceBootstrap =
+        useCache && cached
+          ? { profile: cached.profile, projects: cached.projects, editorByProjectId: {} }
+          : { profile: null, projects: [], editorByProjectId: {} }
+
       setAuthUser(u)
+      setWorkspaceBootstrap(initialBoot)
+      setWelcomeName(welcomeFromBootstrap(initialBoot, u))
+      setWorkspaceRemoteHydrated(false)
+
+      runWorkspaceHydration(u, ac)
     } catch (e) {
       if (ac.signal.aborted || isAbortError(e)) return
       setAuthUser(null)
       setWorkspaceBootstrap(null)
-    } finally {
-      if (!ac.signal.aborted) {
-        setAuthLoading(false)
-      }
+      setWorkspaceRemoteHydrated(false)
     }
-  }, [beginWorkspacePreload])
+  }, [beginWorkspacePreload, runWorkspaceHydration])
 
   if (authLoading) {
     return (
-      <div className="mx-auto max-w-lg px-4 py-10">
-        <div className="rounded-2xl border border-stone-200 bg-white p-6 text-sm text-stone-700 shadow-sm">
-          טוען…
+      <div className="mx-auto max-w-lg px-4 py-10" aria-busy="true" aria-label="טוען">
+        <div className="space-y-3 rounded-2xl border border-stone-200 bg-white p-6 shadow-sm">
+          <div className="h-4 w-2/3 animate-pulse rounded bg-stone-200" />
+          <div className="h-4 w-1/2 animate-pulse rounded bg-stone-200" />
+          <div className="h-20 animate-pulse rounded-lg bg-stone-100" />
         </div>
       </div>
     )
   }
 
-  if (!authUser) {
+  if (!authUser || !workspaceBootstrap) {
     return (
       <div className="min-h-screen bg-stone-50">
         <Suspense fallback={<AppRouteFallback />}>
@@ -140,26 +176,21 @@ export default function App() {
     )
   }
 
-  if (!workspaceBootstrap) {
-    return (
-      <div className="mx-auto max-w-lg px-4 py-10">
-        <div className="rounded-2xl border border-stone-200 bg-white p-6 text-sm text-stone-700 shadow-sm">
-          טוען…
-        </div>
-      </div>
-    )
-  }
-
   return (
     <Suspense fallback={<AppRouteFallback />}>
       <AuthedCalculatorPage
         welcomeName={welcomeName}
         workspaceBootstrap={workspaceBootstrap}
+        workspaceRemoteHydrated={workspaceRemoteHydrated}
         onSignOut={() => void (async () => {
+          remoteRunGenRef.current += 1
+          const uid = authUser?.id
           clearProjectCache()
+          if (uid) clearWorkspaceLocalCache(uid)
           await signOut()
           setAuthUser(null)
           setWorkspaceBootstrap(null)
+          setWorkspaceRemoteHydrated(false)
         })()}
       />
     </Suspense>

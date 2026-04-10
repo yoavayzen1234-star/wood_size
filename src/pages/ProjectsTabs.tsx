@@ -17,6 +17,11 @@ export type ProjectTabsProps = {
   flushPendingEditorSave: () => Promise<void>
   /** אם הוגדר — רשימת הפרויקטים כבר נטענה בפרילוד (בלי getProjects כפול) */
   prefetchedProjects?: Project[]
+  /**
+   * אחרי תשובת רשת ראשונה לרשימת פרויקטים (או כשל).
+   * עד אז לא יוצרים "פרויקט 1" אוטומטית כשהרשימה ריקה — כדי לא לשבור טעינה פרוגרסיבית.
+   */
+  workspaceRemoteHydrated?: boolean
 }
 
 /** שם לפרויקט חדש — ממשיך מספור "פרויקט N" לפי המקסימום הקיים */
@@ -34,6 +39,7 @@ export function ProjectsTabs({
   onSelect,
   flushPendingEditorSave,
   prefetchedProjects,
+  workspaceRemoteHydrated = true,
 }: ProjectTabsProps) {
   const [projects, setProjects] = useState<Project[]>(() => prefetchedProjects ?? [])
   const [creating, setCreating] = useState(false)
@@ -47,6 +53,9 @@ export function ProjectsTabs({
   const deletingRef = useRef(false)
   const refreshAbortRef = useRef<AbortController | null>(null)
   const refreshGenRef = useRef(0)
+
+  const prefetchSyncKey =
+    prefetchedProjects === undefined ? '_unset_' : `set:${prefetchedProjects.map((p) => p.id).join('|')}`
 
   const refresh = useCallback(async () => {
     refreshAbortRef.current?.abort()
@@ -67,36 +76,19 @@ export function ProjectsTabs({
   }, [])
 
   useEffect(() => {
-    if (prefetchedProjects !== undefined) {
-      setProjects(prefetchedProjects)
-      if (!activeProjectId) {
-        const first = prefetchedProjects[0]
-        if (first) {
-          selectProject(first)
-        } else {
-          void (async () => {
-            try {
-              const p = await createProject('פרויקט 1')
-              const next = await refresh()
-              const created = next.find((x) => x.id === p.id) ?? p
-              selectProject(created)
-            } catch (e) {
-              setError(e instanceof Error ? e.message : String(e))
-            }
-          })()
-        }
-      }
-      return () => {
-        refreshAbortRef.current?.abort()
-      }
-    }
+    if (prefetchedProjects === undefined) return
+    setProjects(prefetchedProjects)
+  }, [prefetchedProjects])
+
+  useEffect(() => {
+    if (prefetchedProjects !== undefined) return
 
     void refresh()
       .then((list) => {
         if (activeProjectId) return
         const first = list[0]
         if (first) {
-          selectProject(first)
+          void selectProject(first)
           return
         }
         void (async () => {
@@ -104,7 +96,7 @@ export function ProjectsTabs({
             const p = await createProject('פרויקט 1')
             const next = await refresh()
             const created = next.find((x) => x.id === p.id) ?? p
-            selectProject(created)
+            void selectProject(created)
           } catch (e) {
             setError(e instanceof Error ? e.message : String(e))
           }
@@ -115,7 +107,29 @@ export function ProjectsTabs({
       refreshAbortRef.current?.abort()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [prefetchedProjects === undefined])
+
+  useEffect(() => {
+    if (prefetchedProjects === undefined) return
+    if (activeProjectId) return
+    const first = prefetchedProjects[0]
+    if (first) {
+      void selectProject(first)
+      return
+    }
+    if (!workspaceRemoteHydrated) return
+    void (async () => {
+      try {
+        const p = await createProject('פרויקט 1')
+        const next = await refresh()
+        const created = next.find((x) => x.id === p.id) ?? p
+        void selectProject(created)
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e))
+      }
+    })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefetchSyncKey, workspaceRemoteHydrated, activeProjectId])
 
   const selectProject = async (p: Project) => {
     if (activeProjectId && activeProjectId !== p.id) {
