@@ -1,5 +1,9 @@
 import { randomId } from './randomId'
-import type { PartInput } from './cuttingOptimizer'
+import {
+  normalizeStoreStockLengthsCm,
+  type PartInput,
+  type PartSplitStrategy,
+} from './cuttingOptimizer'
 
 export type DraftRow = {
   id: string
@@ -8,6 +12,8 @@ export type DraftRow = {
   lengthCm: string
   quantity: string
   name: string
+  /** פיצול חלק ארוך מקטלוג; חסר = max-first */
+  splitStrategy?: PartSplitStrategy
 }
 
 export const newDraftRowId = () => randomId()
@@ -79,6 +85,23 @@ export function legacyKeyFromWoodTypeKey(woodKey: string): string | null {
   return profileMaterialKey(height, width)
 }
 
+/** אורך קורה מקסימלי בקטלוג לפרופיל (ס״מ). */
+export function maxStoreCatalogCmForPartRow(
+  widthCm: number,
+  heightCm: number,
+  storeStockLengthsByMaterial: Readonly<Record<string, readonly number[]>>,
+  defaultStockLengthsCm: readonly number[],
+): number {
+  const key = woodTypeKey(widthCm, heightCm)
+  const legacy = legacyKeyFromWoodTypeKey(key)
+  const raw =
+    storeStockLengthsByMaterial[key] ??
+    (legacy != null ? storeStockLengthsByMaterial[legacy] : undefined) ??
+    defaultStockLengthsCm
+  const L = normalizeStoreStockLengthsCm([...raw])
+  return L[L.length - 1]!
+}
+
 export function rowsToParts(rows: DraftRow[]): PartInput[] {
   const parts: PartInput[] = []
   for (const r of rows) {
@@ -88,12 +111,14 @@ export function rowsToParts(rows: DraftRow[]): PartInput[] {
     const quantity = parseDraftQuantity(r.quantity)
     if (heightCm == null || widthCm == null || lengthCm == null || quantity == null) continue
     const name = (r.name || 'ללא שם').trim() || 'ללא שם'
-    parts.push({
+    const part: PartInput = {
       lengthCm,
       quantity,
       label: name,
       material: woodTypeKey(widthCm, heightCm),
-    })
+    }
+    if (r.splitStrategy === 'symmetric') part.splitStrategy = 'symmetric'
+    parts.push(part)
   }
   return parts
 }

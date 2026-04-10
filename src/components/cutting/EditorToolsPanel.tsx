@@ -18,7 +18,7 @@ export const EditorToolsPanel = memo(function EditorToolsPanel({
   onToolSidebarKeyDown: (e: KeyboardEvent<HTMLElement>, toolIndex: number) => void
 }) {
   return (
-    <div className="order-2 flex min-h-0 flex-col space-y-6 lg:sticky lg:top-20 lg:order-2 lg:max-h-[calc(100vh-5rem)] lg:min-h-0 lg:overflow-y-auto lg:self-start lg:pb-2">
+    <div className="order-2 flex min-h-0 min-w-0 flex-col space-y-6 lg:sticky lg:top-20 lg:order-2 lg:max-h-[calc(100vh-5rem)] lg:min-h-0 lg:overflow-y-auto lg:self-start lg:pb-2">
       <div className="no-print flex w-full min-h-0 shrink-0 flex-col rounded-xl border border-stone-200 bg-white p-4 shadow-sm ring-1 ring-stone-100/80">
         <h2 className="mb-3 text-sm font-semibold text-stone-900">כלים</h2>
         <div className="grid grid-cols-3 gap-2">

@@ -6,6 +6,7 @@ export type EditorRowShape = {
   lengthCm: string
   quantity: string
   name: string
+  splitStrategy?: 'max-first' | 'symmetric'
 }
 
 export type EditorPayloadShape = {
@@ -34,7 +35,8 @@ function rowsEqual(a: EditorRowShape[], b: EditorRowShape[]): boolean {
       x.widthCm !== y.widthCm ||
       x.lengthCm !== y.lengthCm ||
       x.quantity !== y.quantity ||
-      x.name !== y.name
+      x.name !== y.name ||
+      x.splitStrategy !== y.splitStrategy
     ) {
       return false
     }

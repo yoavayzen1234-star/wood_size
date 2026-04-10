@@ -8,7 +8,8 @@ const AuthedCalculatorPage = lazy(() =>
   import('./pages/AuthedCalculatorPage').then((m) => ({ default: m.AuthedCalculatorPage })),
 )
 import { isAbortError } from './lib/asyncGuards'
-import { clearProjectCache } from './lib/projectCache'
+import { offlineClearAllForUser } from './lib/offlineDb'
+import { clearProjectCache, invalidateAllProjectStates } from './lib/projectCache'
 import {
   clearWorkspaceLocalCache,
   isWorkspaceLocalCacheFresh,
@@ -18,6 +19,7 @@ import {
 import type { UserWorkspaceBootstrap } from './services/preloadUserData'
 import { preloadUserWorkspaceData } from './services/preloadUserData'
 import { getCurrentUser, signOut } from './services/auth'
+import { onSyncComplete, runOfflineOutboxSync } from './sync/syncEngine'
 
 function welcomeFromBootstrap(boot: UserWorkspaceBootstrap, authUser: User): string {
   const n = boot.profile?.display_name?.trim()
@@ -48,6 +50,8 @@ export default function App() {
 
   const workspacePreloadAbortRef = useRef<AbortController | null>(null)
   const remoteRunGenRef = useRef(0)
+  const authUserRef = useRef<User | null>(null)
+  authUserRef.current = authUser
 
   const beginWorkspacePreload = useCallback(() => {
     workspacePreloadAbortRef.current?.abort()
@@ -121,6 +125,30 @@ export default function App() {
     }
   }, [beginWorkspacePreload, runWorkspaceHydration])
 
+  useEffect(() => {
+    return onSyncComplete(() => {
+      const u = authUserRef.current
+      if (!u) return
+      invalidateAllProjectStates()
+      void (async () => {
+        try {
+          const boot = await preloadUserWorkspaceData()
+          if (!authUserRef.current) return
+          setWorkspaceBootstrap(boot)
+          setWelcomeName(welcomeFromBootstrap(boot, u))
+          writeWorkspaceLocalCache(u.id, { profile: boot.profile, projects: boot.projects })
+        } catch {
+          /* ignore */
+        }
+      })()
+    })
+  }, [])
+
+  useEffect(() => {
+    if (!authUser) return
+    void runOfflineOutboxSync()
+  }, [authUser])
+
   const completeLoginAfterAuth = useCallback(async () => {
     const ac = beginWorkspacePreload()
     try {
@@ -186,7 +214,14 @@ export default function App() {
           remoteRunGenRef.current += 1
           const uid = authUser?.id
           clearProjectCache()
-          if (uid) clearWorkspaceLocalCache(uid)
+          if (uid) {
+            clearWorkspaceLocalCache(uid)
+            try {
+              await offlineClearAllForUser(uid)
+            } catch {
+              /* ignore */
+            }
+          }
           await signOut()
           setAuthUser(null)
           setWorkspaceBootstrap(null)

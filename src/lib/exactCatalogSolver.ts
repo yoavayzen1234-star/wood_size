@@ -24,6 +24,7 @@ import {
   DEFAULT_STORE_STOCK_LENGTHS_CM,
   aggregateShoppingList,
   normalizeStoreStockLengthsCm,
+  splitPartInputsToFitMaxStockCm,
 } from './cuttingOptimizer'
 import { metersBareFromCm } from '../numericFormat'
 import { randomId } from './randomId'
@@ -435,10 +436,26 @@ export async function solveExactStoreCatalog(
   const getStoreLengthsForMaterial = (material: string) =>
     normalizeStoreStockLengthsCm(storeStockLengthsByMaterial?.[material] ?? defaultStoreStockLengthsCm)
 
+  const maxStockCmForMaterial = (material: string) => {
+    const L = getStoreLengthsForMaterial(material)
+    return L[L.length - 1]!
+  }
+
+  const { parts: rowsForSolve, anySplit: partsWereSplitForCatalog } = splitPartInputsToFitMaxStockCm(
+    partRows,
+    maxStockCmForMaterial,
+  )
+  const splitSolverNote =
+    'חלקים ארוכים מקורת הקטלוג המקסימלית פוצלו לפי האסטרטגיה בשורה (ברירת מחדל: מקס׳ חנות + שארית; או חלוקה שווה) — ספירת קורות וחיתוכים מתייחסת לקטעים אלה.'
+
   const finish = (partial: Omit<CatalogOptimizationResult, 'mode' | 'solveTimeMs' | 'solveTimeSeconds'>): CatalogOptimizationResult => {
     const solveTimeMs = performance.now() - t0
+    const mergedNote = [partsWereSplitForCatalog ? splitSolverNote : '', partial.solverNote ?? '']
+      .filter((s) => s.trim())
+      .join(' ')
     return {
       ...partial,
+      ...(mergedNote ? { solverNote: mergedNote } : {}),
       mode: 'store-catalog',
       solverKind: 'exact-dp',
       solveTimeMs,
@@ -446,7 +463,7 @@ export async function solveExactStoreCatalog(
     }
   }
 
-  const mats = materialsInParts(partRows)
+  const mats = materialsInParts(rowsForSolve)
   if (mats.length === 0) {
     return finish({
       patterns: [],
@@ -462,7 +479,7 @@ export async function solveExactStoreCatalog(
     const storeLengths = getStoreLengthsForMaterial(material)
     const maxStockCm = storeLengths[storeLengths.length - 1]!
     const maxStockMm = maxStockCm * 10
-    const types = buildTypesForMaterial(material, partRows)
+    const types = buildTypesForMaterial(material, rowsForSolve)
     for (const t of types) {
       if (t.lengthMm > maxStockMm + 1e-6) {
         errors.push(
@@ -487,7 +504,7 @@ export async function solveExactStoreCatalog(
     const storeLengths = getStoreLengthsForMaterial(material)
     const maxStockCm = storeLengths[storeLengths.length - 1]!
     const maxStockMm = maxStockCm * 10
-    const types = buildTypesForMaterial(material, partRows)
+    const types = buildTypesForMaterial(material, rowsForSolve)
     if (types.length === 0) continue
 
     const { beams, costMm } = await solveOneMaterialExact(material, types, k, maxStockMm, storeLengths)

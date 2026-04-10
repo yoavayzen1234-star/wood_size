@@ -30,6 +30,10 @@ export async function signOut(): Promise<void> {
 
 export async function getCurrentUser(): Promise<User | null> {
   if (!supabase) return null
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    const { data } = await supabase.auth.getSession()
+    return data.session?.user ?? null
+  }
   const { data, error } = await supabase.auth.getUser()
   if (error) {
     if (isAuthSessionMissingError(error)) return null

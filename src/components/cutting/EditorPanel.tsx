@@ -3,6 +3,7 @@ import { Loader2, Plus, Ruler, ShoppingCart, Trash2 } from 'lucide-react'
 import type { DraftRow } from '../../lib/draftRows'
 import {
   legacyKeyFromWoodTypeKey,
+  maxStoreCatalogCmForPartRow,
   parseDraftPositiveCm,
   woodTypeKey,
 } from '../../lib/draftRows'
@@ -24,8 +25,201 @@ export type EditorPanelProps = {
   onPartFieldKeyDown: (e: KeyboardEvent<HTMLElement>, rowId: string, field: PartField) => void
 }
 
+/** רשימת חלקים דסקטופ — ארבע עמודות שוות + פעולות */
+const PARTS_DESK_GRID =
+  'grid w-full min-w-0 grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_48px] items-stretch divide-x divide-x-reverse divide-stone-600'
+
+/** ריפוד אופקי אחיד לעמודות 1–4 (כותרת + גוף) */
+const PARTS_DESK_CELL_PAD = 'px-2 sm:px-2.5'
+
+const PARTS_DESK_HEADER_BASE =
+  'flex min-h-8 min-w-0 max-w-full items-center overflow-hidden py-1 text-xs font-semibold leading-tight text-stone-800 break-words hyphens-auto sm:min-h-9 sm:py-1.5 sm:text-sm'
+/** כותרות מספריות — כמו שדות ממוספרים (מירכוז) */
+const PARTS_DESK_HEADER_NUM = `${PARTS_DESK_HEADER_BASE} ${PARTS_DESK_CELL_PAD} justify-center text-center`
+/** שם / מטרה — כמו שדה הטקסט */
+const PARTS_DESK_HEADER_NAME = `${PARTS_DESK_HEADER_BASE} ${PARTS_DESK_CELL_PAD} justify-end text-right`
+/** עמודת פעולות — רוחב רשת 48px */
+const PARTS_DESK_HEADER_LAST = `${PARTS_DESK_HEADER_BASE} w-full min-w-0 justify-center px-0 text-center`
+
+const PARTS_DESK_BODY_CELL = `flex min-w-0 max-w-full items-center overflow-hidden ${PARTS_DESK_CELL_PAD} py-0.5 sm:py-1`
+const PARTS_DESK_BODY_CELL_LAST =
+  'flex min-w-0 w-full max-w-full items-center justify-center overflow-hidden px-0 py-0.5 sm:py-1'
+
+/** תא כמות — flex + justify-center; הכותרת משתמשת ב־PARTS_DESK_HEADER_NUM (מירכוז זהה) */
+const PARTS_DESK_BODY_QTY = `flex min-w-0 max-w-full items-center justify-center overflow-hidden ${PARTS_DESK_CELL_PAD} py-0.5 sm:py-1`
+
+/** בסיס שדה מספרי בטבלה (בלי min-width — נקבע לפי שימוש) */
+const DESK_INPUT_TABLE_NUM_BASE =
+  'box-border h-8 w-full rounded border border-stone-600 bg-white px-2 py-0 text-center text-sm tabular-nums leading-tight shadow-sm outline-none focus:border-blue-500 focus:outline-none sm:h-9 sm:px-2.5'
+
+/** מספרים בטבלת דסקטופ — אורך, כמות וכו׳ */
+const DESK_INPUT_TABLE_NUM = `${DESK_INPUT_TABLE_NUM_BASE} min-w-0`
+
+/** שם / מטרה — אותו גובה כמו שדות המספרים לשורה נמוכה */
+const DESK_INPUT_TABLE_TXT =
+  'box-border h-8 w-full min-w-0 rounded border border-stone-600 bg-white px-2 py-0 text-right text-sm leading-tight text-stone-800 shadow-sm outline-none focus:border-blue-500 focus:outline-none sm:h-9 sm:px-2.5'
+
+/** עובי × רוחב — רוחב מינימלי נוח לשתי ספרות; עדיין flex-1 שווה ביניהם */
+const DESK_DIM_FLEX = `${DESK_INPUT_TABLE_NUM_BASE} min-w-[2.85rem] flex-1 basis-0 sm:min-w-[3.35rem]`
+
+const DESK_INPUT_LENGTH = DESK_INPUT_TABLE_NUM
+const DESK_INPUT_QTY = DESK_INPUT_TABLE_NUM
+const DESK_INPUT_NAME = DESK_INPUT_TABLE_TXT
+
+/** כפתור/מקום פיצול אורך — כגובה שדה המספר */
+const DESK_SPLIT_BTN_TABLE =
+  'box-border inline-flex h-8 w-7 shrink-0 items-center justify-center self-stretch rounded border text-sm font-semibold leading-none shadow-sm outline-none transition-colors focus-visible:border-blue-500 focus-visible:outline-none sm:h-9 sm:w-8'
+
+/** כפתור סרגל מידות */
+const DESK_RULER_BTN_TABLE =
+  'inline-flex size-8 shrink-0 items-center justify-center rounded border border-stone-300 bg-white text-stone-600 shadow-sm outline-none hover:bg-stone-50 focus-visible:border-blue-500 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-40 sm:size-9'
+
+function rowNeedsOversizeSplitControl(
+  row: DraftRow,
+  storeStockLengthsByMaterial: Record<string, number[]>,
+  storeStockLengthsCm: number[],
+): boolean {
+  const h = parseDraftPositiveCm(row.heightCm)
+  const w = parseDraftPositiveCm(row.widthCm)
+  const L = parseDraftPositiveCm(row.lengthCm)
+  if (h == null || w == null || L == null) return false
+  const maxCm = maxStoreCatalogCmForPartRow(w, h, storeStockLengthsByMaterial, storeStockLengthsCm)
+  return L > maxCm + 1e-9
+}
+
+function LengthFieldWithSplit({
+  row,
+  rowIndex,
+  variant,
+  storeStockLengthsByMaterial,
+  storeStockLengthsCm,
+  onUpdateRow,
+  onPartFieldFocusSelect,
+  onPartFieldEnter,
+  onPartFieldKeyDown,
+  inputClassName,
+}: {
+  row: DraftRow
+  rowIndex: number
+  variant: 'card' | 'table'
+  storeStockLengthsByMaterial: Record<string, number[]>
+  storeStockLengthsCm: number[]
+  onUpdateRow: EditorPanelProps['onUpdateRow']
+  onPartFieldFocusSelect: EditorPanelProps['onPartFieldFocusSelect']
+  onPartFieldEnter: EditorPanelProps['onPartFieldEnter']
+  onPartFieldKeyDown: EditorPanelProps['onPartFieldKeyDown']
+  inputClassName: string
+}) {
+  const showSplitToggle = rowNeedsOversizeSplitControl(
+    row,
+    storeStockLengthsByMaterial,
+    storeStockLengthsCm,
+  )
+  const isSymmetric = row.splitStrategy === 'symmetric'
+
+  const inputCls =
+    variant === 'table'
+      ? `${inputClassName} box-border min-h-0 min-w-0 w-full flex-1 basis-0`
+      : showSplitToggle
+        ? `${inputClassName} min-w-0 flex-1`
+        : inputClassName
+
+  const tableSplitSlot =
+    variant === 'table' ? (
+      showSplitToggle ? (
+        <button
+          type="button"
+          onClick={() =>
+            onUpdateRow(row.id, {
+              splitStrategy: isSymmetric ? undefined : 'symmetric',
+            })
+          }
+          aria-pressed={isSymmetric}
+          title={
+            isSymmetric
+              ? 'חלוקה שווית — לחץ למצב מקס׳ קטלוג + שארית'
+              : 'מקס׳ קטלוג + שארית — לחץ לחלוקה שווית'
+          }
+          aria-label={
+            isSymmetric
+              ? 'מצב פיצול: חלוקה שווית. לחץ למעבר למקס׳ קטלוג ושארית'
+              : 'מצב פיצול: מקס׳ קטלוג ושארית. לחץ למעבר לחלוקה שווית'
+          }
+          className={`${DESK_SPLIT_BTN_TABLE} ${
+            isSymmetric
+              ? 'border-stone-700 bg-stone-800 text-white hover:bg-stone-900'
+              : 'border-stone-400 bg-white text-stone-800 hover:bg-stone-50'
+          }`}
+        >
+          =
+        </button>
+      ) : (
+        <span
+          className="box-border inline-block h-8 w-7 shrink-0 self-stretch rounded border border-transparent sm:h-9 sm:w-8"
+          aria-hidden
+        />
+      )
+    ) : showSplitToggle ? (
+      <button
+        type="button"
+        onClick={() =>
+          onUpdateRow(row.id, {
+            splitStrategy: isSymmetric ? undefined : 'symmetric',
+          })
+        }
+        aria-pressed={isSymmetric}
+        title={
+          isSymmetric
+            ? 'חלוקה שווית — לחץ למצב מקס׳ קטלוג + שארית'
+            : 'מקס׳ קטלוג + שארית — לחץ לחלוקה שווית'
+        }
+        aria-label={
+          isSymmetric
+            ? 'מצב פיצול: חלוקה שווית. לחץ למעבר למקס׳ קטלוג ושארית'
+            : 'מצב פיצול: מקס׳ קטלוג ושארית. לחץ למעבר לחלוקה שווית'
+        }
+        className={`box-border inline-flex h-10 w-6 shrink-0 items-center justify-center rounded border text-[13px] font-semibold leading-none shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-stone-400/60 ${
+          isSymmetric
+            ? 'border-stone-700 bg-stone-800 text-white hover:bg-stone-900'
+            : 'border-stone-400 bg-white text-stone-800 hover:bg-stone-50'
+        }`}
+      >
+        =
+      </button>
+    ) : null
+
+  const tableWrapCls =
+    'flex w-full min-w-0 max-w-full min-h-0 items-stretch gap-1.5 overflow-hidden sm:gap-2'
+
+  return (
+    <div
+      className={variant === 'table' ? tableWrapCls : 'flex w-full min-w-0 max-w-full items-stretch gap-2'}
+      dir="ltr"
+    >
+      {tableSplitSlot}
+      <input
+        type="number"
+        dir="ltr"
+        min={0.1}
+        step={0.1}
+        value={row.lengthCm}
+        data-part-field={`${row.id}:l`}
+        onChange={(e) => onUpdateRow(row.id, { lengthCm: e.target.value })}
+        onKeyDown={(e) => {
+          onPartFieldKeyDown(e, row.id, 'l')
+          onPartFieldEnter(e, rowIndex, 'l')
+        }}
+        onFocus={onPartFieldFocusSelect}
+        enterKeyHint="next"
+        className={inputCls}
+      />
+    </div>
+  )
+}
+
 export const EditorPanel = memo(function EditorPanel({
   rows,
+  storeStockLengthsCm,
   storeStockLengthsByMaterial,
   hasValidPartsForCalc,
   calculating,
@@ -41,7 +235,7 @@ export const EditorPanel = memo(function EditorPanel({
   return (
     <>
       <div className="no-print order-1 flex min-h-0 min-w-0 flex-col lg:order-1">
-        <div className="flex min-h-0 flex-col rounded-xl border border-stone-200 bg-white p-5 shadow-sm ring-1 ring-stone-100/80">
+        <div className="flex min-h-0 min-w-0 flex-col rounded-xl border border-stone-200 bg-white p-5 shadow-sm ring-1 ring-stone-100/80">
           <h2 className="mb-2 flex items-center gap-2 text-base font-semibold text-stone-800">
             <Plus className="size-4 text-stone-500" aria-hidden />
             רשימת חלקים
@@ -141,21 +335,17 @@ export const EditorPanel = memo(function EditorPanel({
                 <div className="mt-3 grid grid-cols-2 gap-2">
                   <div>
                     <p className="mb-1 text-xs font-semibold text-stone-800">אורך (ס״מ)</p>
-                    <input
-                      type="number"
-                      dir="ltr"
-                      min={0.1}
-                      step={0.1}
-                      value={row.lengthCm}
-                      data-part-field={`${row.id}:l`}
-                      onChange={(e) => onUpdateRow(row.id, { lengthCm: e.target.value })}
-                      onKeyDown={(e) => {
-                        onPartFieldKeyDown(e, row.id, 'l')
-                        onPartFieldEnter(e, rowIndex, 'l')
-                      }}
-                      onFocus={onPartFieldFocusSelect}
-                      enterKeyHint="next"
-                      className="min-h-10 w-full rounded-lg border border-stone-400 bg-white px-3 text-center text-base tabular-nums shadow-sm outline-none focus:border-stone-900 focus:ring-2 focus:ring-stone-400/60"
+                    <LengthFieldWithSplit
+                      row={row}
+                      rowIndex={rowIndex}
+                      variant="card"
+                      storeStockLengthsByMaterial={storeStockLengthsByMaterial}
+                      storeStockLengthsCm={storeStockLengthsCm}
+                      onUpdateRow={onUpdateRow}
+                      onPartFieldFocusSelect={onPartFieldFocusSelect}
+                      onPartFieldEnter={onPartFieldEnter}
+                      onPartFieldKeyDown={onPartFieldKeyDown}
+                      inputClassName="min-h-10 w-full rounded-lg border border-stone-400 bg-white px-2 text-center text-base tabular-nums shadow-sm outline-none focus:border-stone-900 focus:ring-2 focus:ring-stone-400/60"
                     />
                   </div>
                   <div>
@@ -201,166 +391,166 @@ export const EditorPanel = memo(function EditorPanel({
             ))}
           </div>
 
-          <div className="hidden overflow-x-auto rounded-lg sm:block">
-            <table
-              className="w-auto max-w-full border-collapse border-2 border-stone-600 text-xs sm:text-sm"
-              dir="rtl"
+          <div
+            className="hidden min-w-0 w-full max-w-full overflow-x-hidden rounded-lg border-2 border-stone-600 sm:block"
+            dir="rtl"
+            role="table"
+            aria-label="רשימת חלקים"
+          >
+            <div
+              className={`${PARTS_DESK_GRID} border-b border-stone-600 bg-stone-200`}
+              role="row"
             >
-              <thead>
-                <tr className="bg-stone-200">
-                  <th className="min-w-[10.5rem] border border-stone-600 px-2 py-1.5 text-start text-[11px] font-semibold whitespace-nowrap text-stone-800 sm:min-w-[12rem] sm:px-3 sm:py-2 sm:text-xs">
-                    מידת עץ (ס״מ)
-                  </th>
-                  <th className="border border-stone-600 px-2 py-1.5 text-start text-[11px] font-semibold whitespace-nowrap text-stone-800 sm:px-3 sm:py-2 sm:text-xs">
-                    אורך (ס״מ)
-                  </th>
-                  <th className="border border-stone-600 px-2 py-1.5 text-start text-[11px] font-semibold whitespace-nowrap text-stone-800 sm:px-3 sm:py-2 sm:text-xs">
-                    כמות
-                  </th>
-                  <th className="min-w-[6.5rem] border border-stone-600 px-2 py-1.5 text-start text-[11px] font-semibold text-stone-800 sm:min-w-[7rem] sm:px-3 sm:py-2 sm:text-xs">
-                    שם / מטרה
-                  </th>
-                  <th className="w-10 border border-stone-600 px-1.5 py-1.5 sm:w-11 sm:px-2 sm:py-2" aria-hidden />
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((row, rowIndex) => (
-                  <tr key={row.id} className="bg-stone-50">
-                    <td className="min-w-[10.5rem] border border-stone-600 px-1.5 py-1.5 align-middle whitespace-nowrap sm:min-w-[12rem] sm:px-2 sm:py-2">
-                      <div className="flex shrink-0 flex-nowrap items-center gap-1.5 whitespace-nowrap" dir="ltr">
-                        <input
-                          type="number"
-                          dir="ltr"
-                          min={0.1}
-                          step={0.1}
-                          value={row.heightCm}
-                          data-part-field={`${row.id}:h`}
-                          onChange={(e) => onUpdateRow(row.id, { heightCm: e.target.value })}
-                          onKeyDown={(e) => {
-                            onPartFieldKeyDown(e, row.id, 'h')
-                            onPartFieldEnter(e, rowIndex, 'h')
-                          }}
-                          onFocus={onPartFieldFocusSelect}
-                          className="box-border min-h-8 w-[4.25rem] rounded border border-stone-600 bg-white px-1.5 py-1 text-center text-xs tabular-nums shadow-sm outline-none focus:border-stone-900 focus:ring-2 focus:ring-stone-400/60 sm:min-h-9 sm:w-[4.75rem] sm:px-2 sm:py-1.5 sm:text-sm"
-                          title="גובה (ס״מ)"
-                          aria-label="גובה קורה בס״מ"
-                        />
-                        <span className="text-stone-500 select-none" aria-hidden>
-                          ×
-                        </span>
-                        <input
-                          type="number"
-                          dir="ltr"
-                          min={0.1}
-                          step={0.1}
-                          value={row.widthCm}
-                          data-part-field={`${row.id}:w`}
-                          onChange={(e) => onUpdateRow(row.id, { widthCm: e.target.value })}
-                          onKeyDown={(e) => {
-                            onPartFieldKeyDown(e, row.id, 'w')
-                            onPartFieldEnter(e, rowIndex, 'w')
-                          }}
-                          onFocus={onPartFieldFocusSelect}
-                          className="box-border min-h-8 w-[4.25rem] rounded border border-stone-600 bg-white px-1.5 py-1 text-center text-xs tabular-nums shadow-sm outline-none focus:border-stone-900 focus:ring-2 focus:ring-stone-400/60 sm:min-h-9 sm:w-[4.75rem] sm:px-2 sm:py-1.5 sm:text-sm"
-                          title="רוחב (ס״מ)"
-                          aria-label="רוחב קורה בס״מ"
-                        />
-                        {(() => {
-                          const h = parseDraftPositiveCm(row.heightCm)
-                          const w = parseDraftPositiveCm(row.widthCm)
-                          const key = h != null && w != null ? woodTypeKey(w, h) : null
-                          const leg = key != null ? legacyKeyFromWoodTypeKey(key) : null
-                          const hasOverride = key
-                            ? storeStockLengthsByMaterial[key] != null ||
-                              (leg != null && storeStockLengthsByMaterial[leg] != null)
-                            : false
-                          return (
-                            <button
-                              type="button"
-                              onClick={() => key && onOpenMaterialStockEditor(key)}
-                              disabled={!key}
-                              className="ms-1 inline-flex h-7 w-7 items-center justify-center rounded border border-stone-300 bg-white text-stone-600 shadow-sm hover:bg-stone-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-stone-500 disabled:pointer-events-none disabled:opacity-40 sm:h-8 sm:w-8"
-                              title={
-                                key
-                                  ? hasOverride
-                                    ? 'אורכי חנות לפרופיל (מותאם)'
-                                    : 'אורכי חנות לפרופיל (ברירת מחדל)'
-                                  : 'הזינו גובה ורוחב כדי לערוך אורכי חנות לפרופיל'
-                              }
-                              aria-label="ערוך אורכי חנות לפרופיל"
-                            >
-                              <Ruler className={`size-3.5 ${hasOverride ? 'text-stone-900' : ''}`} aria-hidden />
-                            </button>
-                          )
-                        })()}
-                      </div>
-                    </td>
-                    <td className="border border-stone-600 px-1.5 py-1.5 align-middle whitespace-nowrap sm:px-2 sm:py-2">
-                      <input
-                        type="number"
-                        dir="ltr"
-                        min={0.1}
-                        step={0.1}
-                        value={row.lengthCm}
-                        data-part-field={`${row.id}:l`}
-                        onChange={(e) => onUpdateRow(row.id, { lengthCm: e.target.value })}
-                        onKeyDown={(e) => {
-                          onPartFieldKeyDown(e, row.id, 'l')
-                          onPartFieldEnter(e, rowIndex, 'l')
-                        }}
-                        onFocus={onPartFieldFocusSelect}
-                        className="box-border min-h-8 w-[6.5rem] rounded border border-stone-600 bg-white px-1.5 py-1 text-center text-xs tabular-nums shadow-sm outline-none focus:border-stone-900 focus:ring-2 focus:ring-stone-400/60 sm:min-h-9 sm:w-[7.25rem] sm:px-2 sm:py-1.5 sm:text-sm"
-                      />
-                    </td>
-                    <td className="border border-stone-600 px-1.5 py-1.5 align-middle whitespace-nowrap sm:px-2 sm:py-2">
-                      <input
-                        type="number"
-                        dir="ltr"
-                        min={1}
-                        step={1}
-                        value={row.quantity}
-                        data-part-field={`${row.id}:q`}
-                        onChange={(e) => onUpdateRow(row.id, { quantity: e.target.value })}
-                        onKeyDown={(e) => {
-                          onPartFieldKeyDown(e, row.id, 'q')
-                          onPartFieldEnter(e, rowIndex, 'q')
-                        }}
-                        onFocus={onPartFieldFocusSelect}
-                        className="box-border min-h-8 w-[4.25rem] rounded border border-stone-600 bg-white px-1.5 py-1 text-center text-xs tabular-nums shadow-sm outline-none focus:border-stone-900 focus:ring-2 focus:ring-stone-400/60 sm:min-h-9 sm:w-[4.75rem] sm:px-2 sm:py-1.5 sm:text-sm"
-                      />
-                    </td>
-                    <td className="min-w-[7.5rem] border border-stone-600 px-1.5 py-1.5 align-middle sm:min-w-[8rem] sm:px-2 sm:py-2">
-                      <input
-                        type="text"
-                        value={row.name}
-                        data-part-field={`${row.id}:n`}
-                        onChange={(e) => onUpdateRow(row.id, { name: e.target.value })}
-                        onKeyDown={(e) => {
-                          onPartFieldKeyDown(e, row.id, 'n')
-                          onPartFieldEnter(e, rowIndex, 'n')
-                        }}
-                        onFocus={onPartFieldFocusSelect}
-                        className="box-border min-h-8 w-full min-w-[6.5rem] rounded border border-stone-600 bg-white px-1.5 py-1 text-xs text-stone-800 shadow-sm outline-none focus:border-stone-900 focus:ring-2 focus:ring-stone-400/60 sm:min-h-9 sm:min-w-[7rem] sm:px-2 sm:py-1.5 sm:text-sm"
-                        placeholder="אופציונלי"
-                        aria-label="שם או מטרה"
-                      />
-                    </td>
-                    <td className="border border-stone-600 bg-white px-1 py-1.5 align-middle sm:py-2">
-                      <button
-                        type="button"
-                        aria-label="מחק שורה"
-                        data-part-field={`${row.id}:d`}
-                        onClick={() => onRemoveRow(row.id)}
-                        disabled={rows.length <= 1}
-                        className="p-1 text-stone-400 hover:text-stone-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-stone-500 disabled:pointer-events-none disabled:opacity-25"
-                      >
-                        <Trash2 className="size-3.5" />
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+              <div className={PARTS_DESK_HEADER_NUM} role="columnheader">
+                מידת עץ (ס״מ)
+              </div>
+              <div className={PARTS_DESK_HEADER_NUM} role="columnheader">
+                אורך (ס״מ)
+              </div>
+              <div className={PARTS_DESK_HEADER_NUM} role="columnheader">
+                כמות
+              </div>
+              <div className={PARTS_DESK_HEADER_NAME} role="columnheader">
+                שם / מטרה
+              </div>
+              <div className={PARTS_DESK_HEADER_LAST} role="columnheader" aria-hidden />
+            </div>
+            {rows.map((row, rowIndex) => (
+              <div
+                key={row.id}
+                className={`${PARTS_DESK_GRID} border-b border-stone-600 bg-stone-50 last:border-b-0`}
+                role="row"
+              >
+                <div className={PARTS_DESK_BODY_CELL} role="cell">
+                  <div className="flex min-w-0 w-full max-w-full flex-nowrap items-center gap-1.5 sm:gap-2" dir="ltr">
+                    <input
+                      type="number"
+                      dir="ltr"
+                      min={0.1}
+                      step={0.1}
+                      value={row.heightCm}
+                      data-part-field={`${row.id}:h`}
+                      onChange={(e) => onUpdateRow(row.id, { heightCm: e.target.value })}
+                      onKeyDown={(e) => {
+                        onPartFieldKeyDown(e, row.id, 'h')
+                        onPartFieldEnter(e, rowIndex, 'h')
+                      }}
+                      onFocus={onPartFieldFocusSelect}
+                      className={DESK_DIM_FLEX}
+                      title="עובי / גובה (ס״מ)"
+                      aria-label="גובה קורה בס״מ"
+                    />
+                    <span className="shrink-0 select-none text-stone-500" aria-hidden>
+                      ×
+                    </span>
+                    <input
+                      type="number"
+                      dir="ltr"
+                      min={0.1}
+                      step={0.1}
+                      value={row.widthCm}
+                      data-part-field={`${row.id}:w`}
+                      onChange={(e) => onUpdateRow(row.id, { widthCm: e.target.value })}
+                      onKeyDown={(e) => {
+                        onPartFieldKeyDown(e, row.id, 'w')
+                        onPartFieldEnter(e, rowIndex, 'w')
+                      }}
+                      onFocus={onPartFieldFocusSelect}
+                      className={DESK_DIM_FLEX}
+                      title="רוחב (ס״מ)"
+                      aria-label="רוחב קורה בס״מ"
+                    />
+                    {(() => {
+                      const h = parseDraftPositiveCm(row.heightCm)
+                      const w = parseDraftPositiveCm(row.widthCm)
+                      const key = h != null && w != null ? woodTypeKey(w, h) : null
+                      const leg = key != null ? legacyKeyFromWoodTypeKey(key) : null
+                      const hasOverride = key
+                        ? storeStockLengthsByMaterial[key] != null ||
+                          (leg != null && storeStockLengthsByMaterial[leg] != null)
+                        : false
+                      return (
+                        <button
+                          type="button"
+                          onClick={() => key && onOpenMaterialStockEditor(key)}
+                          disabled={!key}
+                          className={DESK_RULER_BTN_TABLE}
+                          title={
+                            key
+                              ? hasOverride
+                                ? 'אורכי חנות לפרופיל (מותאם)'
+                                : 'אורכי חנות לפרופיל (ברירת מחדל)'
+                              : 'הזינו גובה ורוחב כדי לערוך אורכי חנות לפרופיל'
+                          }
+                          aria-label="ערוך אורכי חנות לפרופיל"
+                        >
+                          <Ruler className={`size-4 ${hasOverride ? 'text-stone-900' : ''}`} aria-hidden />
+                        </button>
+                      )
+                    })()}
+                  </div>
+                </div>
+                <div className={PARTS_DESK_BODY_CELL} role="cell">
+                  <LengthFieldWithSplit
+                    row={row}
+                    rowIndex={rowIndex}
+                    variant="table"
+                    storeStockLengthsByMaterial={storeStockLengthsByMaterial}
+                    storeStockLengthsCm={storeStockLengthsCm}
+                    onUpdateRow={onUpdateRow}
+                    onPartFieldFocusSelect={onPartFieldFocusSelect}
+                    onPartFieldEnter={onPartFieldEnter}
+                    onPartFieldKeyDown={onPartFieldKeyDown}
+                    inputClassName={DESK_INPUT_LENGTH}
+                  />
+                </div>
+                <div className={PARTS_DESK_BODY_QTY} role="cell">
+                  <input
+                    type="number"
+                    dir="ltr"
+                    min={1}
+                    step={1}
+                    value={row.quantity}
+                    data-part-field={`${row.id}:q`}
+                    onChange={(e) => onUpdateRow(row.id, { quantity: e.target.value })}
+                    onKeyDown={(e) => {
+                      onPartFieldKeyDown(e, row.id, 'q')
+                      onPartFieldEnter(e, rowIndex, 'q')
+                    }}
+                    onFocus={onPartFieldFocusSelect}
+                    className={DESK_INPUT_QTY}
+                  />
+                </div>
+                <div className={PARTS_DESK_BODY_CELL} role="cell">
+                  <input
+                    type="text"
+                    value={row.name}
+                    data-part-field={`${row.id}:n`}
+                    onChange={(e) => onUpdateRow(row.id, { name: e.target.value })}
+                    onKeyDown={(e) => {
+                      onPartFieldKeyDown(e, row.id, 'n')
+                      onPartFieldEnter(e, rowIndex, 'n')
+                    }}
+                    onFocus={onPartFieldFocusSelect}
+                    className={DESK_INPUT_NAME}
+                    placeholder="אופציונלי"
+                    aria-label="שם או מטרה"
+                  />
+                </div>
+                <div className={PARTS_DESK_BODY_CELL_LAST} role="cell">
+                  <button
+                    type="button"
+                    aria-label="מחק שורה"
+                    data-part-field={`${row.id}:d`}
+                    onClick={() => onRemoveRow(row.id)}
+                    disabled={rows.length <= 1}
+                    className="rounded p-1 text-stone-400 outline-none hover:text-stone-700 focus-visible:border focus-visible:border-blue-500 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-25"
+                  >
+                    <Trash2 className="size-4" aria-hidden />
+                  </button>
+                </div>
+              </div>
+            ))}
           </div>
 
           <div className="mt-3 hidden sm:block">

@@ -1,6 +1,7 @@
 import { lazy, Suspense, useCallback, useMemo } from 'react'
 import type { UserWorkspaceBootstrap } from '../services/preloadUserData'
 import { rowsToParts } from '../lib/draftRows'
+import { useOnlineStatus } from '../hooks/useOnlineStatus'
 import { useActiveProject } from '../hooks/useProjects'
 import { useProjectEditor } from '../hooks/useProjectEditor'
 import { useOptimizer } from '../hooks/useOptimizer'
@@ -41,6 +42,7 @@ export function AuthedCalculatorPage({
   const editor = useProjectEditor(activeProject, workspaceBootstrap, clearResult)
 
   const hasValidPartsForCalc = useMemo(() => rowsToParts(editor.rows).length > 0, [editor.rows])
+  const online = useOnlineStatus()
 
   const showWorkspaceSkeleton =
     !workspaceRemoteHydrated && workspaceBootstrap.projects.length === 0
@@ -62,9 +64,9 @@ export function AuthedCalculatorPage({
 
   return (
     <div className="min-h-screen">
-      <AppHeader welcomeName={welcomeName} onSignOut={onSignOut} />
+      <AppHeader welcomeName={welcomeName} onSignOut={onSignOut} offline={!online} />
 
-      <main className="mx-auto max-w-[1400px] px-4 py-8 pb-28 sm:pb-8">
+      <main className="mx-auto max-w-[1680px] px-4 py-8 pb-28 sm:pb-8">
         <ProjectsSidebar
           activeProjectId={activeProject?.id ?? null}
           onSelectProject={setActiveProject}
@@ -86,7 +88,7 @@ export function AuthedCalculatorPage({
           handleMaterialDraftKeyDown={editor.handleMaterialDraftKeyDown}
         />
 
-        <div className="mb-4 grid gap-8 print:mb-0 print:grid-cols-1 lg:grid-cols-2 lg:items-start">
+        <div className="mb-4 grid min-w-0 gap-8 print:mb-0 print:grid-cols-1 lg:grid-cols-[minmax(0,1.12fr)_minmax(0,0.88fr)] lg:items-start">
           {showWorkspaceSkeleton ? (
             <>
               <EditorColumnSkeleton />

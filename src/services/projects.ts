@@ -1,6 +1,24 @@
 import { isAbortError, throwIfAborted } from '../lib/asyncGuards'
 import { supabase } from '../lib/supabase'
-import { DEFAULT_STORE_STOCK_LENGTHS_CM } from '../lib/cuttingOptimizer'
+import {
+  DEFAULT_STORE_STOCK_LENGTHS_CM,
+  normalizeStoreStockLengthsCm,
+  type PartSplitStrategy,
+} from '../lib/cuttingOptimizer'
+import {
+  offlineAppendOutbox,
+  offlineDeleteProjectRecord,
+  offlineGetEditorSnapshot,
+  offlineGetProjectRow,
+  offlineGetProjectsForUser,
+  offlineMirrorServerProjects,
+  offlinePutEditorSnapshot,
+  offlinePutProjectMirror,
+  offlineQueueSaveEditor,
+  offlineRemoveOutboxForProject,
+  offlineUpsertProjectLocal,
+  type OfflineProjectRow,
+} from '../lib/offlineDb'
 import { computeProjectEditorDiff } from '../lib/projectEditorDiff'
 import {
   getProjectStateOrFetch,
@@ -28,6 +46,7 @@ export type ProjectEditorRow = {
   lengthCm: string
   quantity: string
   name: string
+  splitStrategy?: PartSplitStrategy
 }
 
 export type ProjectEditorPayload = {
@@ -58,6 +77,7 @@ function legacyEditorPayloadFromData(data: unknown): ProjectEditorPayload | null
       if (!item || typeof item !== 'object') continue
       const o = item as Record<string, unknown>
       if (typeof o.id !== 'string') continue
+      const symmetric = o.splitStrategy === 'symmetric'
       rows.push({
         id: o.id,
         heightCm: typeof o.heightCm === 'string' ? o.heightCm : '',
@@ -65,6 +85,7 @@ function legacyEditorPayloadFromData(data: unknown): ProjectEditorPayload | null
         lengthCm: typeof o.lengthCm === 'string' ? o.lengthCm : '',
         quantity: typeof o.quantity === 'string' ? o.quantity : '',
         name: typeof o.name === 'string' ? o.name : '',
+        ...(symmetric ? { splitStrategy: 'symmetric' as const } : {}),
       })
     }
   }
@@ -125,6 +146,30 @@ function isMissingDbObject(err: { message?: string } | null): boolean {
   )
 }
 
+function isOfflineWorkMode(): boolean {
+  return typeof navigator !== 'undefined' && !navigator.onLine
+}
+
+function defaultOfflineEditorPayload(): ProjectEditorPayload {
+  return {
+    kerfMm: 0,
+    rows: [emptyEditorRow()],
+    storeStockLengthsCm: normalizeStoreStockLengthsCm([...DEFAULT_STORE_STOCK_LENGTHS_CM]),
+    storeStockLengthsByMaterial: {},
+  }
+}
+
+function offlineRowToProject(row: OfflineProjectRow): Project {
+  return {
+    id: row.id,
+    user_id: row.userId,
+    name: row.name,
+    kerf_mm: 0,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  }
+}
+
 function shouldFallbackSaveToDataJson(err: { message?: string } | null): boolean {
   const m = (err?.message ?? '').toLowerCase()
   return m.includes('save_project_editor_state') || (m.includes('function') && m.includes('does not exist'))
@@ -132,6 +177,13 @@ function shouldFallbackSaveToDataJson(err: { message?: string } | null): boolean
 
 async function requireUserId(signal?: AbortSignal): Promise<string> {
   throwIfAborted(signal)
+  if (isOfflineWorkMode()) {
+    const { data } = await supabase.auth.getSession()
+    throwIfAborted(signal)
+    const uid = data.session?.user?.id
+    if (!uid) throw new Error('Not authenticated.')
+    return uid
+  }
   const { data, error } = await supabase.auth.getUser()
   throwIfAborted(signal)
   if (error) throw new Error(error.message)
@@ -181,6 +233,28 @@ export async function createProject(name: string): Promise<Project> {
 
   const userId = await requireUserId()
 
+  if (isOfflineWorkMode()) {
+    const id = crypto.randomUUID()
+    const now = new Date().toISOString()
+    const row: OfflineProjectRow = {
+      id,
+      userId,
+      name: trimmed,
+      created_at: now,
+      pendingCreate: true,
+    }
+    await offlineUpsertProjectLocal(row)
+    const initial = defaultOfflineEditorPayload()
+    await offlinePutEditorSnapshot(id, initial)
+    await offlineAppendOutbox({
+      op: 'create_project',
+      projectId: id,
+      userId,
+      name: trimmed,
+    })
+    return offlineRowToProject(row)
+  }
+
   const { data, error } = await supabase
     .from('projects')
     .insert({ user_id: userId, name: trimmed })
@@ -189,12 +263,22 @@ export async function createProject(name: string): Promise<Project> {
 
   if (error) throw new Error(error.message)
   if (!data) throw new Error('Create project failed (missing row).')
-  return projectFromListRowLite(data)
+  const created = projectFromListRowLite(data)
+  try {
+    await offlinePutProjectMirror(created)
+  } catch {
+    /* ignore */
+  }
+  return created
 }
 
 export async function getProjects(signal?: AbortSignal): Promise<Project[]> {
   const userId = await requireUserId(signal)
   throwIfAborted(signal)
+
+  if (isOfflineWorkMode()) {
+    return offlineGetProjectsForUser(userId)
+  }
 
   let q = supabase
     .from('projects')
@@ -205,12 +289,36 @@ export async function getProjects(signal?: AbortSignal): Promise<Project[]> {
   const { data, error } = await q
 
   if (error) throw new Error(error.message)
-  return (data ?? []).map((row) => projectFromListRowLite(row as ProjectListRowLite))
+  const list = (data ?? []).map((row) => projectFromListRowLite(row as ProjectListRowLite))
+  try {
+    await offlineMirrorServerProjects(userId, list)
+  } catch {
+    /* IndexedDB לא זמין — ממשיכים */
+  }
+  return list
 }
 
 export async function deleteProject(projectId: string): Promise<void> {
   const id = String(projectId ?? '').trim()
   if (!id) return
+
+  if (isOfflineWorkMode()) {
+    await requireUserId()
+    const row = await offlineGetProjectRow(id)
+    if (row?.pendingCreate) {
+      await offlineDeleteProjectRecord(id)
+      await offlineRemoveOutboxForProject(id)
+    } else if (row) {
+      await offlineUpsertProjectLocal({ ...row, pendingDelete: true })
+      await offlineAppendOutbox({ op: 'delete_project', projectId: id })
+    } else {
+      await offlineAppendOutbox({ op: 'delete_project', projectId: id })
+    }
+    invalidateProjectState(id)
+    saveAbortByProject.delete(id)
+    saveGenerationByProject.delete(id)
+    return
+  }
 
   const userId = await requireUserId()
   const { error } = await supabase.from('projects').delete().eq('id', id).eq('user_id', userId)
@@ -218,6 +326,11 @@ export async function deleteProject(projectId: string): Promise<void> {
   invalidateProjectState(id)
   saveAbortByProject.delete(id)
   saveGenerationByProject.delete(id)
+  try {
+    await offlineDeleteProjectRecord(id)
+  } catch {
+    /* ignore */
+  }
 }
 
 async function saveProjectEditorStateRpcFull(
@@ -301,6 +414,7 @@ async function replaceProjectPartsTable(
     length_cm: r.lengthCm,
     quantity: r.quantity,
     name: r.name,
+    split_strategy: r.splitStrategy === 'symmetric' ? 'symmetric' : 'max-first',
   }))
   const { error } = await supabase.from('project_parts').insert(insert).abortSignal(signal)
   if (error) throw new Error(error.message)
@@ -375,6 +489,16 @@ export async function persistProjectEditorIfChanged(
   const { generation, signal, releaseController } = beginProjectSave(id)
 
   try {
+    if (isOfflineWorkMode()) {
+      throwIfAborted(signal)
+      const snap = cloneEditorPayload(next)
+      await offlinePutEditorSnapshot(id, snap)
+      await offlineQueueSaveEditor(id, snap)
+      if (!isCurrentSaveGeneration(id, generation)) return 'aborted'
+      setCachedProjectState(id, next)
+      return 'saved'
+    }
+
     await requireUserId()
     throwIfAborted(signal)
 
@@ -410,6 +534,11 @@ export async function persistProjectEditorIfChanged(
 
     if (!isCurrentSaveGeneration(id, generation)) return 'aborted'
     setCachedProjectState(id, next)
+    try {
+      await offlinePutEditorSnapshot(id, cloneEditorPayload(next))
+    } catch {
+      /* ignore */
+    }
     return 'saved'
   } finally {
     releaseController()
@@ -430,6 +559,8 @@ export async function deleteProjectPartRow(
   const id = String(projectId ?? '').trim()
   const rid = String(clientRowId ?? '').trim()
   if (!id || !rid) return
+
+  if (isOfflineWorkMode()) return
 
   await requireUserId()
   let q = supabase.from('project_parts').delete().eq('project_id', id).eq('client_row_id', rid)
@@ -494,7 +625,7 @@ async function fetchProjectEditorStateFromRemote(
 
   const partsRes = await supabase
     .from('project_parts')
-    .select('client_row_id, height_cm, width_cm, length_cm, quantity, name')
+    .select('client_row_id, height_cm, width_cm, length_cm, quantity, name, split_strategy')
     .eq('project_id', id)
     .order('sort_order', { ascending: true })
     .abortSignal(signal)
@@ -523,14 +654,19 @@ async function fetchProjectEditorStateFromRemote(
 
   throwIfAborted(signal)
 
-  let rows: ProjectEditorRow[] = (partRows ?? []).map((r) => ({
-    id: r.client_row_id,
-    heightCm: r.height_cm ?? '',
-    widthCm: r.width_cm ?? '',
-    lengthCm: r.length_cm ?? '',
-    quantity: r.quantity ?? '',
-    name: r.name ?? '',
-  }))
+  let rows: ProjectEditorRow[] = (partRows ?? []).map((r) => {
+    const base: ProjectEditorRow = {
+      id: r.client_row_id,
+      heightCm: r.height_cm ?? '',
+      widthCm: r.width_cm ?? '',
+      lengthCm: r.length_cm ?? '',
+      quantity: r.quantity ?? '',
+      name: r.name ?? '',
+    }
+    const ss = (r as { split_strategy?: string }).split_strategy
+    if (ss === 'symmetric') base.splitStrategy = 'symmetric'
+    return base
+  })
 
   const legacy = legacyEditorPayloadFromData((proj as { data?: unknown }).data)
 
@@ -608,7 +744,29 @@ export async function loadProjectEditorState(
       }
     : undefined
 
-  return getProjectStateOrFetch(id, () => fetchProjectEditorStateFromRemote(id, eff), wrapBg, eff)
+  const fetcher = async (): Promise<ProjectEditorPayload> => {
+    if (isOfflineWorkMode()) {
+      let snap = await offlineGetEditorSnapshot(id)
+      if (!snap) {
+        const pr = await offlineGetProjectRow(id)
+        if (pr && !pr.pendingDelete) {
+          snap = defaultOfflineEditorPayload()
+          await offlinePutEditorSnapshot(id, snap)
+        }
+      }
+      if (snap) return snap
+      throw new Error('אין נתוני פרויקט במכשיר (אופליין).')
+    }
+    const remote = await fetchProjectEditorStateFromRemote(id, eff)
+    try {
+      await offlinePutEditorSnapshot(id, cloneEditorPayload(remote))
+    } catch {
+      /* ignore */
+    }
+    return remote
+  }
+
+  return getProjectStateOrFetch(id, fetcher, wrapBg, eff)
 }
 
 export async function renameProject(projectId: string, name: string): Promise<void> {
@@ -616,6 +774,14 @@ export async function renameProject(projectId: string, name: string): Promise<vo
   if (!pid) throw new Error('Project id is required.')
   const trimmed = String(name ?? '').trim()
   if (!trimmed) throw new Error('Project name is required.')
+
+  if (isOfflineWorkMode()) {
+    const row = await offlineGetProjectRow(pid)
+    if (!row) throw new Error('Project not found offline.')
+    await offlineUpsertProjectLocal({ ...row, name: trimmed })
+    await offlineAppendOutbox({ op: 'rename_project', projectId: pid, name: trimmed })
+    return
+  }
 
   const userId = await requireUserId()
   const { error } = await supabase

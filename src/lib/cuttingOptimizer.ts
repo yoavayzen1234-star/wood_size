@@ -8,11 +8,15 @@ export type StockInput = {
   material: string
 }
 
+/** פיצול חלק ארוך מקורת קטלוג: מקס׳+שארית (ברירת מחדל) או חלוקה שווה ל־k = ceil(L/M). */
+export type PartSplitStrategy = 'max-first' | 'symmetric'
+
 export type PartInput = {
   lengthCm: number
   quantity: number
   label: string
   material: string
+  splitStrategy?: PartSplitStrategy
 }
 
 export type BeamSegment =
@@ -91,6 +95,111 @@ export type CatalogOptimizationResult = OptimizationResult & {
 const cmToMm = (cm: number) => cm * 10
 
 const normalizeMaterial = (s: string) => s.trim()
+
+const MAX_PART_LEN_EPS_CM = 1e-9
+
+function roundMmFromCm(cm: number): number {
+  return Math.round(cm * 10)
+}
+
+function cmFromRoundedMm(mm: number): number {
+  return mm / 10
+}
+
+/**
+ * קטעי אורך (ס״מ) לפי אסטרטגיה — max-first: מקס׳ קטלוג M חוזר + שארית; symmetric: k=ceil(L/M) קטעים שווים (מ״מ, סכום מדויק).
+ */
+export function computeSplitSegmentsCm(
+  lengthCm: number,
+  maxStockCm: number,
+  strategy: PartSplitStrategy,
+): number[] {
+  if (lengthCm <= maxStockCm + MAX_PART_LEN_EPS_CM) return [lengthCm]
+  const Lmm = roundMmFromCm(lengthCm)
+  const Mmm = roundMmFromCm(maxStockCm)
+  if (Mmm <= 0) return [lengthCm]
+
+  if (strategy === 'max-first') {
+    const nFull = Math.floor(Lmm / Mmm)
+    const remMm = Lmm - nFull * Mmm
+    const out: number[] = []
+    for (let i = 0; i < nFull; i++) out.push(cmFromRoundedMm(Mmm))
+    if (remMm > 0) out.push(cmFromRoundedMm(remMm))
+    return out
+  }
+
+  const k = Math.ceil(Lmm / Mmm)
+  if (k <= 1) return [lengthCm]
+  const base = Math.floor(Lmm / k)
+  const extra = Lmm - base * k
+  const segs: number[] = []
+  for (let i = 0; i < k; i++) {
+    const mm = base + (i < extra ? 1 : 0)
+    segs.push(cmFromRoundedMm(mm))
+  }
+  return segs
+}
+
+function formatCmForSplitHint(cm: number): string {
+  const x = Math.round(cm * 10) / 10
+  return Number.isInteger(x) ? String(x) : x.toFixed(1)
+}
+
+/** טקסט תצוגה לקטעי פיצול (ס״מ), או null אם אין פיצול. */
+export function formatSplitSegmentsHint(
+  lengthCm: number,
+  maxStockCm: number,
+  strategy: PartSplitStrategy,
+): string | null {
+  if (lengthCm <= maxStockCm + MAX_PART_LEN_EPS_CM) return null
+  const segs = computeSplitSegmentsCm(lengthCm, maxStockCm, strategy)
+  if (segs.length <= 1) return null
+  return segs.map(formatCmForSplitHint).join(' + ')
+}
+
+function tallySegmentsToPartInputs(row: PartInput, segmentLensCm: number[]): PartInput[] {
+  const tally = new Map<number, number>()
+  for (const len of segmentLensCm) {
+    const key = Math.round(len * 10)
+    tally.set(key, (tally.get(key) ?? 0) + 1)
+  }
+  const { label, material, quantity } = row
+  return [...tally.entries()].map(([mmKey, countPerOriginal]) => ({
+    lengthCm: mmKey / 10,
+    quantity: quantity * countPerOriginal,
+    label,
+    material,
+  }))
+}
+
+/**
+ * לכל שורת חלק: אם האורך גדול ממקס׳ קורת הקטלוג — מפצלים לפי splitStrategy (ברירת מחדל max-first).
+ */
+export function splitPartInputsToFitMaxStockCm(
+  partRows: PartInput[],
+  maxStockCmForMaterial: (material: string) => number,
+): { parts: PartInput[]; anySplit: boolean } {
+  let anySplit = false
+  const out: PartInput[] = []
+  for (const row of partRows) {
+    const m = normalizeMaterial(row.material)
+    if (!m || row.quantity <= 0 || row.lengthCm <= 0) {
+      out.push(row)
+      continue
+    }
+    const maxCm = maxStockCmForMaterial(m)
+    if (!(maxCm > 0) || row.lengthCm <= maxCm + MAX_PART_LEN_EPS_CM) {
+      const { splitStrategy: _s, ...rest } = row
+      out.push(rest)
+      continue
+    }
+    anySplit = true
+    const strategy: PartSplitStrategy = row.splitStrategy ?? 'max-first'
+    const segments = computeSplitSegmentsCm(row.lengthCm, maxCm, strategy)
+    out.push(...tallySegmentsToPartInputs(row, segments))
+  }
+  return { parts: out, anySplit }
+}
 
 function usedLengthMm(partCount: number, sumPartsMm: number, kerfMm: number): number {
   if (partCount === 0) return 0

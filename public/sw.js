@@ -1,11 +1,22 @@
 /**
- * PWA: cache-first לנכסים סטטיים מאותו מקור (JS/CSS/fonts/images).
- * לא נוגעים ב-Supabase Auth או בבקשות cross-origin.
+ * PWA: cache-first לנכסים סטטיים; ניווט (SPA) — נסיון רשת ואז fallback ל־index מהמטמון.
+ * לא נוגעים ב-Supabase Auth.
  */
 const CACHE_NAME = 'woodcut-assets-v1'
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(self.skipWaiting())
+  event.waitUntil(
+    (async () => {
+      try {
+        const cache = await caches.open(CACHE_NAME)
+        const scope = self.registration.scope
+        await cache.add(new Request(new URL('index.html', scope).toString(), { cache: 'reload' }))
+      } catch {
+        /* dev / עדיין בלי קאש */
+      }
+      await self.skipWaiting()
+    })(),
+  )
 })
 
 self.addEventListener('activate', (event) => {
@@ -49,6 +60,37 @@ self.addEventListener('fetch', (event) => {
   if (req.method !== 'GET') return
   const url = req.url
   if (isSupabaseAuthRequest(url)) return
+
+  if (req.mode === 'navigate') {
+    event.respondWith(
+      (async () => {
+        try {
+          const res = await fetch(req)
+          if (res.ok) {
+            const cache = await caches.open(CACHE_NAME)
+            try {
+              const copy = res.clone()
+              await cache.put(new Request(new URL('index.html', self.registration.scope).toString()), copy)
+            } catch {
+              /* ignore */
+            }
+          }
+          return res
+        } catch {
+          const cache = await caches.open(CACHE_NAME)
+          const scope = self.registration.scope
+          const hit =
+            (await cache.match(new URL('index.html', scope).toString())) ||
+            (await cache.match(scope)) ||
+            (await cache.match(scope + 'index.html'))
+          if (hit) return hit
+          return new Response('Offline', { status: 503, statusText: 'Offline' })
+        }
+      })(),
+    )
+    return
+  }
+
   if (!shouldCacheFirstSameOrigin(url)) return
 
   event.respondWith(
