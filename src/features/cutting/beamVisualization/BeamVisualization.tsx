@@ -154,9 +154,9 @@ function dimensionTickPositionsPercent(cols: DimCol[], totalFlexMm: number): num
   return pct
 }
 
-const DIM_AXIS_COLOR = '#94a3b8'
+const DIM_AXIS_COLOR = '#000000'
 
-/** תווית מתחת לציר — רק הטקסט נדחף לשארית; רוחב העמודה = אותו flex כמו בפס */
+/** תא תווית מידה מתחת לציר; רק טקסט השארית נדחף */
 function ArchDimLabelCell({
   flexMm,
   totalFlexMm,
@@ -170,7 +170,6 @@ function ArchDimLabelCell({
   ariaLabel: string
   isWaste?: boolean
 }) {
-  const text = isWaste ? 'text-slate-700' : 'text-zinc-700'
   const ratio = totalFlexMm > 0 ? flexMm / totalFlexMm : 0
   const narrow = ratio < 0.07 || flexMm < 32
   const fontClass = narrow ? 'text-[9px] sm:text-[10px]' : 'text-[10px] sm:text-[11px]'
@@ -181,11 +180,11 @@ function ArchDimLabelCell({
       dir="ltr"
     >
       <span
-        className={`max-w-full whitespace-nowrap font-mono font-medium leading-none tabular-nums ${fontClass} ${
+        className={`max-w-full whitespace-nowrap font-mono font-normal leading-none tabular-nums antialiased text-black ${fontClass} ${
           isWaste ? 'inline-block translate-x-5' : ''
         }`.trim()}
       >
-        <DimLtrNum className={text} ariaLabel={ariaLabel}>
+        <DimLtrNum className="text-black" ariaLabel={ariaLabel}>
           {label}
         </DimLtrNum>
       </span>
@@ -201,13 +200,13 @@ function BeamArchitectDimRow({ beam }: { beam: PackedBeam }) {
 
   return (
     <div
-      className="mt-0.5 w-full min-w-0 border-b border-zinc-300/70 bg-[#fafafa] px-0 py-1 print:border-zinc-300 print:bg-white sm:mt-1 sm:py-1.5"
+      className="mt-0.5 w-full min-w-0 bg-transparent px-0 py-0.5 print:bg-transparent sm:mt-1 sm:py-1"
       dir="ltr"
       aria-hidden
     >
       <div className="relative w-full min-w-0">
         {/* ציר אופקי רציף אחד + סימונים אנכיים על הגבולות — רוחב זהה לשורת flex מתחת */}
-        <div className="relative h-[8px] w-full min-w-0 shrink-0">
+        <div className="relative h-[7px] w-full min-w-0 shrink-0">
           <div
             className="pointer-events-none absolute left-0 right-0 top-1/2 h-px -translate-y-1/2"
             style={{ backgroundColor: DIM_AXIS_COLOR }}
@@ -354,13 +353,13 @@ export const BeamVisualization = memo(function BeamVisualization({
         </span>
       </div>
 
-      <div className="w-full min-w-0 max-w-full overflow-x-clip rounded-md px-2 py-1.5 sm:px-2 sm:py-2.5">
+      <div className="w-full min-w-0 max-w-full overflow-visible rounded-md px-2 py-1.5 pr-7 sm:px-2 sm:py-2.5 sm:pr-9">
         {/*
           מיכל אחד לפס קורה + מידות: אותו רוחב פנימי, ריפוד סימטרי בלבד (ללא pr נוסף לשארית),
           gap-0 — כדי שיישור flex יזהה בין שכבות.
         */}
         <div
-          className="flex h-[18px] w-full min-w-0 max-w-full gap-0 overflow-hidden rounded-sm border border-solid border-[#ccc] bg-[#fdfdfd] box-border print:border-zinc-400 print:bg-white sm:h-[20px]"
+          className="flex h-[18px] w-full min-w-0 max-w-full gap-0 overflow-hidden rounded-sm border border-solid border-black bg-[#fdfdfd] box-border print:border-black print:bg-white sm:h-[20px]"
           dir="ltr"
         >
           {beam.segments.map((seg, i) =>
@@ -372,7 +371,7 @@ export const BeamVisualization = memo(function BeamVisualization({
                 aria-hidden
               >
                 <div
-                  className="pointer-events-none absolute inset-y-0 left-1/2 z-[1] w-px -translate-x-1/2 bg-zinc-600 print:bg-black"
+                  className="pointer-events-none absolute inset-y-0 left-1/2 z-[1] w-px -translate-x-1/2 bg-black print:bg-black"
                   aria-hidden
                 />
               </div>
@@ -391,7 +390,7 @@ export const BeamVisualization = memo(function BeamVisualization({
           )}
           {beam.wasteMm > 0 && (
             <div
-              className="min-w-0 shrink box-border border-l border-solid border-l-zinc-600 bg-[#94a3b8] print:bg-slate-400"
+              className="min-w-0 shrink box-border border-l border-solid border-l-black bg-[#94a3b8] print:bg-slate-400"
               style={beamSegmentFlexStyle(beam.wasteMm)}
               aria-label="שארית"
               title="שארית"
@@ -399,9 +398,9 @@ export const BeamVisualization = memo(function BeamVisualization({
           )}
         </div>
         <BeamArchitectDimRow beam={beam} />
-        <p className="pt-1.5 text-center text-sm font-medium text-stone-500 tabular-nums print:text-black sm:pt-2 sm:text-base">
+        <p className="pt-1.5 text-center text-sm font-normal text-black tabular-nums print:text-black sm:pt-2 sm:text-base">
           <LtrNum
-            className="text-base font-medium text-stone-500 print:text-black sm:text-lg"
+            className="text-base font-normal text-black print:text-black sm:text-lg"
             ariaLabel={`אורך קורה ${lengthMetersDisplay} מטר`}
           >
             {lengthMetersDisplay}
