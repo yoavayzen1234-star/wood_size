@@ -94,11 +94,20 @@ export function DashboardPage({ user, onLoggedOut }: { user: User | null; onLogg
   return (
     <div className="mx-auto max-w-3xl px-4 py-10">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="min-w-0">
-          <h1 className="text-xl font-bold text-stone-900">Dashboard</h1>
-          <p className="mt-1 text-sm text-stone-600" dir="ltr">
-            {user?.email ?? ''}
-          </p>
+        <div className="flex min-w-0 items-center gap-3">
+          <img
+            src="/logo.png"
+            alt=""
+            width={44}
+            height={44}
+            className="h-11 w-11 shrink-0 rounded-xl border border-stone-200 bg-white object-contain p-0.5 shadow-sm"
+          />
+          <div className="min-w-0">
+            <h1 className="text-xl font-bold text-stone-900">Dashboard</h1>
+            <p className="mt-1 text-sm text-stone-600" dir="ltr">
+              {user?.email ?? ''}
+            </p>
+          </div>
         </div>
         <button
           type="button"

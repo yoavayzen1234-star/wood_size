@@ -24,6 +24,15 @@ export function LoginPage({ onAuthed }: { onAuthed: () => void }) {
 
   return (
     <div className="mx-auto max-w-lg px-4 py-10">
+      <div className="mb-6 flex justify-center">
+        <img
+          src="/logo.png"
+          alt=""
+          width={72}
+          height={72}
+          className="h-[4.5rem] w-[4.5rem] rounded-2xl border border-stone-200 bg-white object-contain p-1 shadow-sm"
+        />
+      </div>
       <div className="rounded-2xl border border-stone-200 bg-white p-6 shadow-sm ring-1 ring-stone-100/80">
         <h1 className="text-xl font-bold text-stone-900">התחברות</h1>
         <p className="mt-1 text-sm text-stone-600">Email + סיסמה</p>

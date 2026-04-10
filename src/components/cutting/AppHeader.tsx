@@ -10,11 +10,20 @@ export const AppHeader = memo(function AppHeader({
   return (
     <header className="no-print border-b border-stone-200 bg-white/90 backdrop-blur">
       <div className="mx-auto flex max-w-[1400px] flex-wrap items-start justify-between gap-3 px-4 py-3 sm:items-center sm:gap-4">
-        <div className="min-w-0 flex-1">
-          <h1 className="text-xl font-bold tracking-tight text-stone-900 md:text-2xl">
-            מחשבון חיתוך ורשימת קניות
-          </h1>
-          <p className="mt-0.5 text-xs text-stone-600">ברוכים הבאים {welcomeName}</p>
+        <div className="flex min-w-0 flex-1 items-start gap-3 sm:items-center">
+          <img
+            src="/logo.png"
+            alt=""
+            width={44}
+            height={44}
+            className="h-11 w-11 shrink-0 rounded-xl border border-stone-200 bg-white object-contain p-0.5 shadow-sm"
+          />
+          <div className="min-w-0">
+            <h1 className="text-xl font-bold tracking-tight text-stone-900 md:text-2xl">
+              מחשבון חיתוך ורשימת קניות
+            </h1>
+            <p className="mt-0.5 text-xs text-stone-600">ברוכים הבאים {welcomeName}</p>
+          </div>
         </div>
         <div className="no-print">
           <button
